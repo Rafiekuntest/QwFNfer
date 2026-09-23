@@ -78,15 +78,16 @@ endif()
 if(WIN32)
   # llama.cpp builds shared libs as ggml-base.dll + ggml-base.lib (import lib)
   # on Windows. IMPORTED_LOCATION takes the DLL (needed at runtime),
-  # IMPORTED_IMPLIB the .lib (needed at link time). Distinct variable names
-  # per target: find_* caches by variable name, so reusing one name across
-  # targets would freeze the first result in the cache.
-  find_file(GGML_BASE_DLL NAMES ggml-base.dll PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
-  find_library(GGML_BASE_LIB NAMES ggml-base PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
-  find_file(GGML_DLL NAMES ggml.dll PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
-  find_library(GGML_LIB NAMES ggml PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
-  find_file(LLAMA_DLL NAMES llama.dll PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
-  find_library(LLAMA_LIB NAMES llama PATHS "${LLAMA_CPP_BUILD}" NO_DEFAULT_PATH)
+  # IMPORTED_IMPLIB the .lib (needed at link time). A normal llama.cpp build
+  # tree keeps DLLs in build/bin and import libs in build/ggml/src + build/src
+  # (a package.sh-style dir keeps everything in one bin/), so both are searched.
+  set(_QWFN_LIB_DIRS "${LLAMA_CPP_BUILD}" "${LLAMA_CPP_BUILD}/../ggml/src" "${LLAMA_CPP_BUILD}/../src")
+  find_file(GGML_BASE_DLL NAMES ggml-base.dll PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
+  find_library(GGML_BASE_LIB NAMES ggml-base PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
+  find_file(GGML_DLL NAMES ggml.dll PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
+  find_library(GGML_LIB NAMES ggml PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
+  find_file(LLAMA_DLL NAMES llama.dll PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
+  find_library(LLAMA_LIB NAMES llama PATHS ${_QWFN_LIB_DIRS} NO_DEFAULT_PATH)
   if(NOT GGML_BASE_DLL AND NOT GGML_BASE_LIB)
     message(FATAL_ERROR "ggml-base not found under ${LLAMA_CPP_BUILD} (looked for ggml-base.dll/.lib). Build llama.cpp first: cmake -S <llama.cpp> -B <llama.cpp>/build -DGGML_CUDA=ON, then build.")
   endif()

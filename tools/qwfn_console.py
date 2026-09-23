@@ -824,6 +824,15 @@ def start_server(model, s):
             have_dll = any(n.lower().startswith(("ggml", "llama", "cudart", "cublas")) for n in (os.listdir(bindir) if os.path.isdir(bindir) else []))
             if have_dll or os.path.exists(os.path.join(bindir, "ggml-base.dll")):
                 env["PATH"] = bindir + (";" + env["PATH"] if env.get("PATH") else "")
+            else:
+                # Source checkout: the ggml/llama DLLs live in the llama.cpp
+                # build tree (build/bin), not next to qwfn-server. Put that on
+                # PATH too, or the engine dies with missing-DLL popups.
+                for cand in (os.path.join(os.environ.get("USERPROFILE") or os.path.expanduser("~"), ".unsloth", "llama.cpp", "build", "bin"),
+                             os.environ.get("LLAMA_CPP_BUILD") or ""):
+                    if cand and os.path.exists(os.path.join(cand, "ggml-base.dll")):
+                        env["PATH"] = cand + (";" + env.get("PATH", ""))
+                        break
         elif os.path.exists(os.path.join(bindir, "libggml-base.so.0")):
             env["LD_LIBRARY_PATH"] = bindir + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
         try:
