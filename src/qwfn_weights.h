@@ -83,6 +83,13 @@ private:
     std::vector<size_t>                map_size_;
     std::vector<ggml_backend_buffer_t> map_buf_;
     size_t mapped_bytes_ = 0;
+#ifdef _WIN32
+    // Windows file-mapping handles, parallel to map_base_/map_size_: each
+    // shard keeps its file HANDLE and mapping HANDLE so UnmapViewOfFile +
+    // CloseHandle can run in the destructor.
+    std::vector<void *> map_file_;
+    std::vector<void *> map_mapping_;
+#endif
 };
 
 } // namespace qwfn

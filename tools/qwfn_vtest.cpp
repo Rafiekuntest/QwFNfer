@@ -19,7 +19,7 @@ int main(int argc, char ** argv) {
         else if (a == "--reps" && i + 1 < argc) reps = atoi(argv[++i]);
         else if (a == "--threads" && i + 1 < argc) n_threads = atoi(argv[++i]);
     }
-    ggml_backend_load_all_from_path((std::string(getenv("HOME")) + "/.unsloth/llama.cpp/build/bin").c_str());
+    ggml_backend_load_all_from_path((std::string((getenv("HOME") ? getenv("HOME") : (getenv("USERPROFILE") ? getenv("USERPROFILE") : "."))) + "/.unsloth/llama.cpp/build/bin").c_str());
 
     ggml_backend_t be = nullptr;
     if (use_gpu) {

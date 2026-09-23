@@ -94,6 +94,7 @@ int main(int argc, char ** argv) {
     // The backend .so files live next to libllama; load them before any model.
     {
         const char * home = getenv("HOME");
+        if (!home || !*home) home = getenv("USERPROFILE");
         std::string dir = std::string(home ? home : ".") + "/.unsloth/llama.cpp/build/bin";
         ggml_backend_load_all_from_path(dir.c_str());
     }

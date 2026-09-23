@@ -42,8 +42,25 @@ def hf_hubs():
 HF_HUBS = hf_hubs()
 HF = HF_HUBS[0]          # the one the page names; the others are scanned too when they exist
 # The engine: bin/ in the release bundle, build/ in a source checkout, or QWFN_SERVER.
-SERVER_BIN = os.environ.get("QWFN_SERVER") or next((p for p in (os.path.join(ROOT, "bin", "qwfn-server"), os.path.join(ROOT, "build", "qwfn-server")) if os.path.exists(p)), os.path.join(ROOT, "build", "qwfn-server"))
-LOG_DIR = os.path.join(os.path.expanduser("~/.cache"), "qwfn-console")
+# On Windows the binaries are qwfn-server.exe (bundle: bin\, checkout: build\Release\).
+def _find_server():
+    if os.environ.get("QWFN_SERVER"): return os.environ["QWFN_SERVER"]
+    cands = [os.path.join(ROOT, "bin", "qwfn-server"), os.path.join(ROOT, "build", "qwfn-server")]
+    if os.name == "nt":
+        cands = ([c + ".exe" for c in cands]
+                 + [os.path.join(ROOT, "bin", "qwfn-server.exe"),
+                    os.path.join(ROOT, "build", "Release", "qwfn-server.exe"),
+                    os.path.join(ROOT, "build", "qwfn-server.exe")])
+    for p in cands:
+        if os.path.exists(p): return p
+    return cands[0]
+SERVER_BIN = _find_server()
+def _log_dir():
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "qwfn-console")
+    return os.path.join(os.path.expanduser("~/.cache"), "qwfn-console")
+LOG_DIR = _log_dir()
 os.makedirs(LOG_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(LOG_DIR, "config.json")
 
@@ -251,6 +268,44 @@ def hardware():
         hw["qwfn_vram_mb"] = sum(int(float(l.split(",")[1])) for l in apps.splitlines() if "qwfn" in l and "," in l)
     except Exception:
         pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            class MS(ctypes.Structure): _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            ms = MS(); ms.dwLength = ctypes.sizeof(MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                hw["ram_total_gb"] = round(ms.ullTotalPhys / (1 << 30), 1)
+                hw["ram_available_gb"] = round(ms.ullAvailPhys / (1 << 30), 1)
+        except Exception:
+            pass
+        try:
+            cpu = subprocess.run(["wmic", "cpu", "get", "name", "/value"], capture_output=True, text=True, timeout=5).stdout
+            for line in cpu.splitlines():
+                if line.strip().upper().startswith("NAME="): hw["cpu"] = line.split("=", 1)[1].strip(); break
+        except Exception:
+            pass
+        if not hw["cpu"]:
+            # wmic is deprecated/removed on newer Windows; fall back to the
+            # registry-style identifier every Windows machine has.
+            try:
+                import platform
+                hw["cpu"] = platform.processor() or platform.machine()
+            except Exception:
+                pass
+            if not hw["cpu"]:
+                hw["cpu"] = os.environ.get("PROCESSOR_IDENTIFIER", "").strip()
+        try:
+            cores = subprocess.run(["wmic", "cpu", "get", "NumberOfCores", "/value"], capture_output=True, text=True, timeout=5).stdout
+            n = 0
+            for line in cores.splitlines():
+                if "NUMBEROFCORES" in line.upper():
+                    try: n += int(line.split("=", 1)[1].strip())
+                    except Exception: pass
+            hw["cpu_cores"] = n or hw["cpu_threads"]
+        except Exception:
+            hw["cpu_cores"] = hw["cpu_threads"]
+        hw["smt"] = hw["cpu_threads"] > hw["cpu_cores"]
+        return hw
     try:
         mi = {}
         for line in open("/proc/meminfo"):
@@ -277,6 +332,16 @@ def hardware():
     return hw
 
 def mem_available_gb():
+    if os.name == "nt":
+        try:
+            import ctypes
+            class MS(ctypes.Structure): _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            ms = MS(); ms.dwLength = ctypes.sizeof(MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                return ms.ullAvailPhys / (1 << 30)
+        except Exception:
+            pass
+        return 0.0
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable:"): return int(line.split()[1]) / 1048576
@@ -285,6 +350,19 @@ def mem_available_gb():
     return 0.0
 
 def drive_info(path):
+    if os.name == "nt":
+        # No /proc/self/mountinfo or /sys/class/block on Windows. Report the
+        # drive letter and filesystem type; rotational info is unavailable.
+        info = {"mount": os.path.splitdrive(os.path.abspath(path))[0] + "\\", "device": None, "disk": None, "model": None, "rotational": None, "fstype": None}
+        try:
+            import ctypes
+            root = info["mount"]
+            fstype = ctypes.create_unicode_buffer(32)
+            if ctypes.windll.kernel32.GetVolumeInformationW(root, None, 0, None, None, None, fstype, 32):
+                info["fstype"] = fstype.value or None
+        except Exception:
+            pass
+        return info
     """The block device under a path (through /proc/self/mountinfo, since btrfs hides the
     device behind an anonymous st_dev), its model and whether it spins."""
     info = {"mount": "/", "device": None, "disk": None, "model": None, "rotational": None, "fstype": None}
@@ -314,9 +392,38 @@ def drive_info(path):
 
 def probe_nvme(path, seconds=2.0, nth=8, bs=2 << 20):
     """Random O_DIRECT reads of the model file at the size and depth the engine's expert
-    reads have (2 MiB blocks, 8 in flight): GB/s. The rate the cost model prices a miss at."""
+    reads have (2 MiB blocks, 8 in flight): GB/s. The rate the cost model prices a miss at.
+    On Windows there is no O_DIRECT/preadv; the probe uses buffered positional reads
+    (os.open + os.read with lseek per thread on separate fds), which measures the same
+    random-read ceiling closely enough for the cost model."""
     sz = os.path.getsize(path)
     if sz < bs * 64: return None
+    if os.name == "nt":
+        tot = [0] * nth; err = [None] * nth
+        deadline = time.time() + seconds
+        def w(i):
+            try:
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_SEQUENTIAL", 0) | getattr(os, "O_BINARY", 0))
+                rng = random.Random(1000 + i); n = 0
+                while time.time() < deadline:
+                    off = rng.randrange(0, (sz - bs) // 4096) * 4096
+                    os.lseek(fd, off, os.SEEK_SET)
+                    left = bs
+                    while left > 0:
+                        chunk = os.read(fd, min(left, 1 << 20))
+                        if not chunk: break
+                        n += len(chunk); left -= len(chunk)
+                tot[i] = n; os.close(fd)
+            except Exception as e:
+                err[i] = repr(e)
+        ts = [threading.Thread(target=w, args=(i,)) for i in range(nth)]
+        t0 = time.time()
+        for t in ts: t.start()
+        for t in ts: t.join()
+        dt = time.time() - t0
+        if all(err): return {"error": err[0]}
+        gb = sum(tot) / 1e9
+        return {"gbs": round(gb / dt, 2), "gb_read": round(gb, 2), "seconds": round(dt, 2), "block_kib": bs // 1024, "queue": nth}
     tot = [0] * nth; err = [None] * nth
     deadline = time.time() + seconds
     def w(i):
@@ -625,6 +732,17 @@ def recommend(model, hw, preset="coding", vision=None, state_host=None, kv=None,
 _ENGINES = {"t": 0.0, "v": []}
 def engines_running(max_age=0.0):
     if max_age and time.time() - _ENGINES["t"] < max_age: return _ENGINES["v"]
+    if os.name == "nt":
+        # No pgrep on Windows; tasklist filtered on the image name.
+        try:
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq qwfn-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5).stdout
+            procs = [l.strip() for l in out.splitlines() if "qwfn-server" in l.lower()]
+            out2 = subprocess.run(["tasklist", "/FI", "IMAGENAME eq qwfn-gen.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5).stdout
+            procs += [l.strip() for l in out2.splitlines() if "qwfn-gen" in l.lower()]
+        except Exception:
+            procs = []
+        _ENGINES.update(t=time.time(), v=procs)
+        return procs
     try:
         out = subprocess.run(["pgrep", "-a", "-x", "qwfn-server"], capture_output=True, text=True, timeout=3).stdout
         procs = [l for l in out.splitlines() if l.strip()]
@@ -697,10 +815,16 @@ def start_server(model, s):
         if s.get("skip_miss") and not s.get("mtp") and model.get("mtp"):
             log.write("[console] draft head left off: a verified pair and skip-miss do not combine (skip-miss is one token at a time)\n")
         log.flush()
-        # The bundle keeps ggml, the CUDA and C++ runtimes and liburing next to the engine; the
-        # loader needs the directory for the libraries the CUDA backend dlopens.
+        # The bundle keeps ggml, the CUDA and C++ runtimes (and liburing on
+        # Linux) next to the engine; the loader needs the directory for the
+        # libraries the CUDA backend dlopens. On Windows that means PATH, and
+        # the files are .dlls; on Linux LD_LIBRARY_PATH and .so files.
         env = dict(os.environ); bindir = os.path.dirname(SERVER_BIN)
-        if os.path.exists(os.path.join(bindir, "libggml-base.so.0")):
+        if os.name == "nt":
+            have_dll = any(n.lower().startswith(("ggml", "llama", "cudart", "cublas")) for n in (os.listdir(bindir) if os.path.isdir(bindir) else []))
+            if have_dll or os.path.exists(os.path.join(bindir, "ggml-base.dll")):
+                env["PATH"] = bindir + (";" + env["PATH"] if env.get("PATH") else "")
+        elif os.path.exists(os.path.join(bindir, "libggml-base.so.0")):
             env["LD_LIBRARY_PATH"] = bindir + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
         try:
             proc = subprocess.Popen(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
@@ -716,12 +840,21 @@ def stop_server():
         if not p or p.poll() is not None:
             # A server started outside this console (serve.sh, or a console that has since
             # exited) still answers on the port: stop it too, it is the one engine there is.
+            if os.name == "nt":
+                try:
+                    subprocess.run(["taskkill", "/F", "/IM", "qwfn-server.exe"], capture_output=True, timeout=10)
+                except Exception:
+                    pass
+                return {"ok": True}
             pids = [l.split()[0] for l in engines_running() if "qwfn-server" in l]
             for pid in pids:
                 try: os.kill(int(pid), signal.SIGTERM)
                 except Exception: pass
             return {"ok": True, "note": "stopped the server running outside the console" if pids else "no server running"}
-        p.send_signal(signal.SIGTERM)
+        if os.name == "nt":
+            p.terminate()
+        else:
+            p.send_signal(signal.SIGTERM)
         for _ in range(50):
             if p.poll() is not None: break
             time.sleep(0.1)

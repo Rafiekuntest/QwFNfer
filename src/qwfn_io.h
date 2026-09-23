@@ -11,6 +11,12 @@
 // O_DIRECT also keeps the kernel page cache out of the way. We manage the RAM
 // tier ourselves; letting the page cache mirror it would halve our effective
 // capacity on a 30 GB machine.
+//
+// Windows port: io_uring does not exist on Windows. The `uring` backend enum
+// value is kept so call sites compile unchanged, but init() silently maps it
+// to `threads`, which on Windows reads with positional ReadFile (OVERLAPPED)
+// from handles opened with FILE_FLAG_NO_BUFFERING when direct I/O is on.
+// Everything above this layer (expert cache, prefill, PLE) is unchanged.
 
 #include <condition_variable>
 #include <cstdint>
@@ -20,7 +26,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+// Opaque Windows HANDLE without pulling <windows.h> into every consumer.
+typedef void * qwfn_handle_t;
+#else
 struct io_uring;
+#endif
 
 namespace qwfn {
 
@@ -68,18 +79,27 @@ public:
 
     // Two backends behind one interface.
     //
-    //   uring   : io_uring. On this filesystem io_uring_submit() turns out to
+    //   uring   : io_uring (Linux only). On Windows init() maps this to
+    //             `threads` so existing call sites and flags keep working.
+    //             On this filesystem io_uring_submit() turns out to
     //             execute the reads inline rather than queueing them, so a
     //             burst gets far less than the concurrency it asked for --
     //             measured 4.07 GB/s on the engine's 8-read burst.
-    //   threads : a pool of workers doing blocking positional preadv. Real
+    //   threads : a pool of workers doing blocking positional reads
+    //             (pread on Linux, ReadFile+OVERLAPPED on Windows). Real
     //             kernel-level parallelism; measured 5.30 GB/s on the same
     //             burst shape.
     enum class backend { uring, threads };
 
+#ifdef _WIN32
+    static constexpr backend kDefaultBackend = backend::threads;
+#else
+    static constexpr backend kDefaultBackend = backend::uring;
+#endif
+
     // queue_depth is the io_uring ring size / the worker count.
     bool init(const std::vector<std::string> & paths, unsigned queue_depth,
-              bool direct_io, std::string & err, backend be = backend::uring);
+              bool direct_io, std::string & err, backend be = kDefaultBackend);
 
     backend which() const { return be_; }
     void shutdown();
@@ -106,8 +126,14 @@ public:
     bool     registered_files = false;
 
 private:
-    backend          be_ = backend::uring;
+    backend          be_ = kDefaultBackend;
+#ifdef _WIN32
+    // Ring is absent on Windows; the member is kept (as void*) so sizeof/layout
+    // dependent code does not need a second header.
+    void *           ring_ = nullptr;
+#else
     io_uring *       ring_ = nullptr;
+#endif
 
     // --- thread-pool backend ---
     struct job { int shard; uint64_t off; uint32_t len; void * dst; uint64_t tag; uint64_t ooff; uint32_t onb; };   // ooff/onb: the requested range, for the bounce path
@@ -118,7 +144,11 @@ private:
     std::condition_variable   cv_work_, cv_done_;
     bool                      stop_ = false;
     void worker_loop();
+#ifdef _WIN32
+    std::vector<qwfn_handle_t> fds_;   // Win32 HANDLEs, INVALID_HANDLE_VALUE when empty
+#else
     std::vector<int> fds_;
+#endif
     bool             direct_ = true;
     bool             bounce_ = false;   // direct reads through a page-aligned per-worker buffer (512-byte slot layout)
     size_t           in_flight_ = 0;

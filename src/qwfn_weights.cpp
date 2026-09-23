@@ -1,19 +1,39 @@
 #include "qwfn_weights.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 namespace qwfn {
 
 weights::~weights() {
     for (auto b : map_buf_) if (b) ggml_backend_buffer_free(b);
+#ifdef _WIN32
+    for (size_t i = 0; i < map_base_.size(); i++) {
+        if (map_base_[i]) UnmapViewOfFile(map_base_[i]);
+        if (i < map_mapping_.size() && map_mapping_[i]) CloseHandle((HANDLE) map_mapping_[i]);
+        if (i < map_file_.size() && map_file_[i]) CloseHandle((HANDLE) map_file_[i]);
+    }
+#else
     for (size_t i = 0; i < map_base_.size(); i++)
         if (map_base_[i]) munmap(map_base_[i], map_size_[i]);
+#endif
     if (buf_)     ggml_backend_buffer_free(buf_);
     if (ctx_)     ggml_free(ctx_);
     if (backend_) ggml_backend_free(backend_);
@@ -107,6 +127,56 @@ bool weights::commit(std::string & err) {
 
     // One fd per shard, plain buffered reads: this is a single 5.35 GB pass at load
     // time, not a hot path, and the page cache warming here is harmless.
+#ifdef _WIN32
+    auto utf8_to_wide = [](const std::string & s) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+        std::wstring w(wlen > 0 ? (size_t)(wlen - 1) : 0, L'\0');
+        if (wlen > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), wlen);
+        return w;
+    };
+    std::vector<HANDLE> fds;
+    for (const auto & p : mi_->shard_paths()) {
+        std::wstring wp = utf8_to_wide(p);
+        HANDLE h = CreateFileW(wp.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            for (HANDLE f : fds) CloseHandle(f);
+            err = "open failed: " + p + ": error " + std::to_string((int) GetLastError());
+            return false;
+        }
+        fds.push_back(h);
+    }
+
+    std::vector<uint8_t> staging;
+    bool ok = true;
+    for (auto & [t, ref] : pending_) {
+        staging.resize(ref->nbytes);
+        size_t done = 0;
+        while (done < ref->nbytes) {
+            OVERLAPPED ov{};
+            uint64_t cur = ref->file_offset + done;
+            ov.Offset = (DWORD) (cur & 0xFFFFFFFFull);
+            ov.OffsetHigh = (DWORD) (cur >> 32);
+            ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!ov.hEvent) { err = "short read on " + ref->name; ok = false; break; }
+            DWORD chunk = 0;
+            DWORD want = (DWORD) std::min<uint64_t>(ref->nbytes - done, (uint64_t) 1u << 31);
+            BOOL r = ReadFile(fds[ref->shard], staging.data() + done, want, nullptr, &ov);
+            DWORD e = r ? ERROR_SUCCESS : GetLastError();
+            if (!r && e != ERROR_IO_PENDING) { CloseHandle(ov.hEvent); err = "short read on " + ref->name; ok = false; break; }
+            if (!GetOverlappedResult(fds[ref->shard], &ov, &chunk, TRUE) || chunk == 0) {
+                CloseHandle(ov.hEvent); err = "short read on " + ref->name; ok = false; break;
+            }
+            CloseHandle(ov.hEvent);
+            done += (size_t) chunk;
+        }
+        if (!ok) break;
+        ggml_backend_tensor_set(t, staging.data(), 0, ref->nbytes);
+    }
+
+    for (HANDLE f : fds) CloseHandle(f);
+    return ok;
+#else
     std::vector<int> fds;
     for (const auto & p : mi_->shard_paths()) {
         int fd = ::open(p.c_str(), O_RDONLY);
@@ -135,6 +205,7 @@ bool weights::commit(std::string & err) {
 
     for (int f : fds) ::close(f);
     return ok;
+#endif
 }
 
 ggml_tensor * weights::get(const std::string & name) const {
@@ -144,6 +215,34 @@ ggml_tensor * weights::get(const std::string & name) const {
 
 
 bool weights::map_shards(std::string & err) {
+#ifdef _WIN32
+    for (const auto & p : mi_->shard_paths()) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+        std::wstring wp(wlen > 0 ? (size_t)(wlen - 1) : 0, L'\0');
+        if (wlen > 1) MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, wp.data(), wlen);
+        HANDLE hf = CreateFileW(wp.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf == INVALID_HANDLE_VALUE) { err = "open failed: " + p; return false; }
+        LARGE_INTEGER lis{};
+        if (!GetFileSizeEx(hf, &lis) || lis.QuadPart == 0) {
+            CloseHandle(hf); err = "stat failed: " + p; return false;
+        }
+        HANDLE hm = CreateFileMappingW(hf, nullptr, PAGE_READONLY,
+                                       (DWORD) ((uint64_t) lis.QuadPart >> 32),
+                                       (DWORD) ((uint64_t) lis.QuadPart & 0xFFFFFFFFull), nullptr);
+        if (!hm) { CloseHandle(hf); err = "CreateFileMapping failed: " + p; return false; }
+        void * base = MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
+        if (!base) { CloseHandle(hm); CloseHandle(hf); err = "MapViewOfFile failed: " + p; return false; }
+
+        map_base_.push_back(base);
+        map_size_.push_back((size_t) lis.QuadPart);
+        map_file_.push_back((void *) hf);
+        map_mapping_.push_back((void *) hm);
+        map_buf_.push_back(ggml_backend_cpu_buffer_from_ptr(base, (size_t) lis.QuadPart));
+        mapped_bytes_ += (size_t) lis.QuadPart;
+    }
+    return true;
+#else
     for (const auto & p : mi_->shard_paths()) {
         int fd = ::open(p.c_str(), O_RDONLY);
         if (fd < 0) { err = "open failed: " + p; return false; }
@@ -162,6 +261,7 @@ bool weights::map_shards(std::string & err) {
         mapped_bytes_ += (size_t) sz;
     }
     return true;
+#endif
 }
 
 ggml_tensor * weights::declare_mapped(const std::string & name) {

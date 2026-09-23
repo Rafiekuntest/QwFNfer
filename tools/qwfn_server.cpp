@@ -36,10 +36,17 @@
 #include <string>
 #include <unordered_map>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 #include <csignal>
 #include <atomic>
+#ifndef _WIN32
 #include <pthread.h>
+#include <unistd.h>   // write(2) for the backtrace path
+#else
+#include <thread>
+#endif
 #include <vector>
 
 using namespace qwfn;
@@ -549,6 +556,22 @@ struct tool_streamer {
 // Backtraces without a debugger (ptrace is restricted on this machine): a
 // fatal signal prints the dying thread's stack; SIGUSR2, sent by the stall
 // watchdog to the generating thread, prints where it is stuck.
+//
+// Windows: execinfo/pthread signals do not exist. print_backtrace() logs the
+// reason only; the stall watchdog's poke becomes a no-op and the fatal handler
+// re-raises via abort semantics. This keeps the serving path identical while
+// the diagnostics stay Linux-only.
+#ifdef _WIN32
+static void print_backtrace(const char * why) {
+    fprintf(stderr, "\n[qwfn-server] === %s (native backtrace unavailable on Windows) ===\n", why);
+    fflush(stderr);
+}
+static void on_fatal(int sig) {
+    print_backtrace(sig == SIGABRT ? "SIGABRT" : sig == SIGFPE ? "SIGFPE" : sig == SIGILL ? "SIGILL" : "fatal signal");
+    signal(sig, SIG_DFL); raise(sig);
+}
+static std::thread::id g_gen_thread;
+#else
 static void print_backtrace(const char * why) {
     void * frames[64];
     const int n = backtrace(frames, 64);
@@ -563,6 +586,7 @@ static void on_fatal(int sig) {
 }
 static void on_stall_probe(int) { print_backtrace("STALL probe (SIGUSR2)"); }
 static pthread_t g_gen_thread;
+#endif
 static std::atomic<bool> g_gen_thread_set{false};
 
 struct live_stats {
@@ -988,7 +1012,7 @@ int main(int argc, char ** argv) {
     // the expert tier is not lent while an image is encoded. Loaded after the
     // engine, which loads the ggml backends.
     if (!S.eng.init(&S.mi, nullptr, cfg,
-                    std::string(getenv("HOME")) + "/.unsloth/llama.cpp/build/bin", err)) {
+                    std::string((getenv("HOME") ? getenv("HOME") : (getenv("USERPROFILE") ? getenv("USERPROFILE") : "."))) + "/.unsloth/llama.cpp/build/bin", err)) {
         fprintf(stderr, "engine init: %s\n", err.c_str()); return 1;
     }
     fprintf(stderr, "%s\n", S.eng.memory_summary().c_str());
@@ -1235,7 +1259,11 @@ int main(int argc, char ** argv) {
         // Whatever way this returns (an eval error, a client that went away), the
         // counters must not say "busy" forever.
         struct busy_guard { live_stats & L; ~busy_guard() { std::lock_guard<std::mutex> lk(L.mu); L.busy = false; L.prefilling = false; } } guard{S.live};
+#ifdef _WIN32
+        g_gen_thread = std::this_thread::get_id(); g_gen_thread_set = true;
+#else
         g_gen_thread = pthread_self(); g_gen_thread_set = true;
+#endif
         smp.gen.clear();
 
         const auto tp = clk::now();
@@ -1479,8 +1507,11 @@ int main(int argc, char ** argv) {
     // trace) would get the connection cut without a trailer and without a log
     // line here -- "peer closed connection without sending complete message
     // body" on its side. A local server can afford to wait.
-    signal(SIGSEGV, on_fatal); signal(SIGABRT, on_fatal); signal(SIGBUS, on_fatal); signal(SIGFPE, on_fatal);
+    signal(SIGSEGV, on_fatal); signal(SIGABRT, on_fatal); signal(SIGFPE, on_fatal);
+#ifndef _WIN32
+    signal(SIGBUS, on_fatal);
     signal(SIGUSR2, on_stall_probe);
+#endif
     // A local web page (the console, a harness) may read /stats and /props
     // from another origin: allow it.
     svr.set_default_headers({{"Access-Control-Allow-Origin", "*"}, {"Access-Control-Allow-Headers", "Content-Type, Authorization"},
@@ -1502,7 +1533,11 @@ int main(int argc, char ** argv) {
                 const int ws = S.eng.cache_wait_state();
                 fprintf(stderr, "[qwfn-server] STALL: no new token for %.0f s at generated token %d; expert cache waiting on %s (%zu reads)\n",
                         stalled, n, ws == 1 ? "demand reads" : ws == 2 ? "speculative reads" : "nothing (compute or lock)", S.eng.cache_wait_count());
+#ifndef _WIN32
                 if (g_gen_thread_set) pthread_kill(g_gen_thread, SIGUSR2);   // the stuck thread prints its own stack
+#else
+                if (g_gen_thread_set) print_backtrace("STALL (no native stack poke on Windows)");
+#endif
             }
         }
     }).detach();

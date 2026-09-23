@@ -16,11 +16,23 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
+#endif
 #include <random>
 #include <string>
+#ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 using namespace qwfn;
@@ -56,7 +68,7 @@ static void pick_experts(const zipf & z, std::mt19937_64 & g, uint32_t n_expert,
 
 // ---------------------------------------------------------------- raw ceiling
 static void bench_ceiling(model_index & mi, unsigned qd, int n_tokens_equiv) {
-    printf("\n== raw expert-slice fetch over io_uring (no cache, every access a miss) ==\n");
+    printf("\n== raw expert-slice fetch over the io engine (no cache, every access a miss) ==\n");
     std::string err;
     io_engine io;
     if (!io.init(mi.shard_paths(), qd, true, err)) { printf("  init failed: %s\n", err.c_str()); return; }
@@ -110,6 +122,62 @@ static void bench_ceiling(model_index & mi, unsigned qd, int n_tokens_equiv) {
 }
 
 // --------------------------------------------------------- mmap demand paging
+#ifdef _WIN32
+// Windows has no mmap/madvise; MapViewOfFile gives the same demand-paging
+// comparison (read touch at 4 KiB stride, like the POSIX path below).
+static void bench_mmap(model_index & mi, int n_tokens_equiv) {
+    printf("\n== same access pattern via mapped files (what llama.cpp does today) ==\n");
+    const hparams & hp = mi.hp();
+    std::vector<void *> maps(mi.shard_paths().size(), nullptr);
+    std::vector<HANDLE> files(mi.shard_paths().size(), nullptr), mappings(mi.shard_paths().size(), nullptr);
+    std::vector<size_t> sizes(mi.shard_paths().size(), 0);
+    auto utf8_to_wide = [](const std::string & s) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+        std::wstring w(wlen > 0 ? (size_t)(wlen - 1) : 0, L'\0');
+        if (wlen > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), wlen);
+        return w;
+    };
+    for (size_t i = 0; i < mi.shard_paths().size(); i++) {
+        std::wstring wp = utf8_to_wide(mi.shard_paths()[i]);
+        HANDLE hf = CreateFileW(wp.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf == INVALID_HANDLE_VALUE) { printf("  open failed\n"); return; }
+        LARGE_INTEGER lis{};
+        if (!GetFileSizeEx(hf, &lis)) { CloseHandle(hf); printf("  stat failed\n"); return; }
+        HANDLE hm = CreateFileMappingW(hf, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!hm) { CloseHandle(hf); printf("  mapping failed\n"); return; }
+        void * p = MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
+        if (!p) { CloseHandle(hm); CloseHandle(hf); printf("  map failed\n"); return; }
+        files[i] = hf; mappings[i] = hm; maps[i] = p; sizes[i] = (size_t) lis.QuadPart;
+    }
+
+    std::mt19937_64 g(1234);
+    zipf z; z.init(hp.n_expert, 0.0);
+    std::vector<uint32_t> ids;
+    uint64_t bytes = 0, acc = 0;
+    const auto t0 = clk::now();
+    for (int t = 0; t < n_tokens_equiv; t++) {
+        for (uint32_t il = 0; il < hp.n_layer; il++) {
+            pick_experts(z, g, hp.n_expert, hp.n_expert_used, ids);
+            for (uint32_t i = 0; i < ids.size(); i++)
+                for (int q = 0; q < EXPERT_NPARTS; q++) {
+                    const byte_range r = mi.expert_range(il, ids[i], (expert_part) q);
+                    const volatile uint8_t * p = (const uint8_t *) maps[r.shard] + r.offset;
+                    for (uint32_t o = 0; o < r.nbytes; o += 4096) acc += p[o];
+                    bytes += r.nbytes;
+                }
+        }
+    }
+    const double dt = secs(t0, clk::now());
+    printf("  demand paging: %6.2f GB/s -> %6.2f tok/s if every access misses  (checksum %" PRIu64 ")\n",
+           bytes / dt / 1e9, n_tokens_equiv / dt, acc & 0xFF);
+    for (size_t i = 0; i < maps.size(); i++) {
+        if (maps[i]) UnmapViewOfFile(maps[i]);
+        if (mappings[i]) CloseHandle(mappings[i]);
+        if (files[i]) CloseHandle(files[i]);
+    }
+}
+#else
 static void bench_mmap(model_index & mi, int n_tokens_equiv) {
     printf("\n== same access pattern via mmap demand paging (what llama.cpp does today) ==\n");
     const hparams & hp = mi.hp();
@@ -148,6 +216,7 @@ static void bench_mmap(model_index & mi, int n_tokens_equiv) {
            bytes / dt / 1e9, n_tokens_equiv / dt, acc & 0xFF);
     for (size_t i = 0; i < maps.size(); i++) if (maps[i]) munmap(maps[i], sizes[i]);
 }
+#endif
 
 // ------------------------------------------------------- cached decode loop
 static void bench_tokens(model_index & mi, model_index * cold, size_t ram_bytes,
