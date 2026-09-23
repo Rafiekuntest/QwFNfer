@@ -9,6 +9,8 @@
 
 Run a **125B** open-weight MoE on the gaming PC you already own, at interactive speed: **15–25 tok/s**.
 
+> **Windows fork.** This repo is [Rafiekuntest/QwFNfer](https://github.com/Rafiekuntest/QwFNfer), a Windows port of [Apolog1ze-Dev/QwFNfer](https://github.com/Apolog1ze-Dev/QwFNfer) (Linux upstream). Same engine, same tiers, same console — the `io_uring` NVMe layer is a thread pool with overlapped positional reads on Windows. **Start here: [SETUP.md](SETUP.md)** (simple install → model → run), [BUILD_WINDOWS.md](BUILD_WINDOWS.md) (compile it yourself), [CONTRIBUTING.md](CONTRIBUTING.md) (issues, PRs).
+
 ## Updates
 
 **2026-09-11** — (Experimental)The console now tunes itself to the machine it runs on: it measures the drive, sweeps the CPU thread count live on a long-context run, sizes the RAM tier from the memory the server really needs, defaults the KV cache to q8_0 wherever the plan affords it, and its Stats page is live (prefill progress, input / cached / output tokens). The numbers below were re-measured today with those defaults, and an OpenCode agentic-coding run was added.
@@ -77,7 +79,9 @@ The harness reads the numbers from the server's own `/stats` around the run. Wha
 
 ## Getting Started
 
-Linux x86_64 with an NVIDIA GPU (driver 580 or newer) and Python 3. Windows is not supported yet: the engine reads the NVMe through io_uring, and that layer needs a port first.
+**Windows** (this fork): 64-bit Windows 10/11, NVIDIA GPU 16 GB with driver 580 or newer, Python 3.10+. Grab `qwfnfer-windows-x86_64-cuda.zip` from this fork's [Releases](https://github.com/Rafiekuntest/QwFNfer/releases), unzip anywhere, run `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`, then `qwfnfer`. Full walkthrough: [SETUP.md](SETUP.md). Building it yourself: [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
+
+**Linux** (upstream): Linux x86_64 with an NVIDIA GPU (driver 580 or newer) and Python 3 — follow the steps below.
 
 **1. Install.** One command:
 
@@ -125,7 +129,7 @@ Thinking comes back as `thinking` blocks and tool calls as `tool_use` blocks, st
 
 **Or additive, in the app you already use.** Claude Code takes one base URL, so `tools/qwfn_router.py` listens on it and forwards each request by the model it names: the local model's id goes to the engine, everything else goes to `api.anthropic.com` as it came, headers and body untouched, so the claude.ai login, prompt caching and the beta features keep working. `python3 tools/qwfn_router.py --configure` points Claude Code at it (`~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL` and a `modelPicker` entry, a backup kept; `--unconfigure` reverts) and `--install-service` keeps it running as a systemd user service. The local model then shows in `/model` next to the Anthropic ones, in the same app and the same list of sessions, and each session picks. Side requests (titles, summaries) use the session's small model, so they go to Anthropic and leave the engine's prefix alone.
 
-**Building from source** (only if you want to change the engine). Needs CMake, Ninja, CUDA, liburing and a built [llama.cpp](https://github.com/unslothai/llama.cpp) tree for the ggml backends and the tokenizer — Unsloth's `b10798-mix-659e406`, the mix the forward pass is validated against:
+**Building from source** (only if you want to change the engine; on Windows see [BUILD_WINDOWS.md](BUILD_WINDOWS.md) instead — no liburing, MSVC, DLLs beside the binaries). Needs CMake, Ninja, CUDA, liburing and a built [llama.cpp](https://github.com/unslothai/llama.cpp) tree for the ggml backends and the tokenizer — Unsloth's `b10798-mix-659e406`, the mix the forward pass is validated against:
 
 ```bash
 git clone --depth 1 --branch b10798-mix-659e406 https://github.com/unslothai/llama.cpp ~/.unsloth/llama.cpp
@@ -180,7 +184,7 @@ Qwen3.8-Flash-Next ships the Qwen4-generation design, `qwen4exp` in the GGUF, an
 
 **Q4 or Q3?** Q4 for quality, Q3 for speed: 13.2–15.7 against 19.8–21.2 tok/s in chat, 12.9 against 17.7 on a 155K-token document, same machine and same plan. Q3's expert blocks are 2.27 MB against Q4's 3.13, so more of them fit in the same tiers and every miss reads less; that is most of the difference.
 
-**Windows?** In the works, not there yet. Today it is Linux x86_64 with an NVIDIA GPU, driver 580 or newer: the NVMe path is io_uring, so that layer is what has to be ported first — nothing above it is Linux-specific.
+**Windows?** Yes — in this fork ([SETUP.md](SETUP.md)). The NVMe path that was `io_uring`-only is now a thread pool doing overlapped positional `ReadFile` (`FILE_FLAG_NO_BUFFERING` where the volume allows it), `mmap` is `MapViewOfFile`, memory sizing reads `GlobalMemoryStatusEx`, and the console speaks `%LOCALAPPDATA%`, `tasklist` and `nvidia-smi`. Upstream remains Linux x86_64 with an NVIDIA GPU, driver 580 or newer.
 
 **AMD or Intel GPU? Two GPUs?** One NVIDIA GPU: the dense core, the replayed graphs and the VRAM expert tier run on ggml's CUDA backend, and the engine builds for a single device. `--cpu` runs everything on the CPU path — the one the forward pass is validated bit-exact against — but that path exists for validation, not for use.
 
