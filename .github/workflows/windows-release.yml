@@ -54,8 +54,7 @@ jobs:
       - name: Package bundle
         shell: pwsh
         run: |
-          $env:LLAMA_CPP_ROOT = "$env:RUNNER_TEMP\llama.cpp"
-          powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -GgmlLibs $env:GGML_LIBS -CudaLibs "$env:CUDIR\bin\x86_64"
+          powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -LlamaCppRoot "$env:RUNNER_TEMP\llama.cpp" -GgmlLibs $env:GGML_LIBS -CudaLibs "$env:CUDIR\bin\x86_64"
       - name: Smoke test (engine loads, usage prints)
         shell: pwsh
         run: |
