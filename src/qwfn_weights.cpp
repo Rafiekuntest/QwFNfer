@@ -153,21 +153,20 @@ bool weights::commit(std::string & err) {
         staging.resize(ref->nbytes);
         size_t done = 0;
         while (done < ref->nbytes) {
+            // Synchronous handle (no FILE_FLAG_OVERLAPPED): the OVERLAPPED
+            // offset is still honored as the read position, the call blocks,
+            // and the count comes back in lpNumberOfBytesRead directly — no
+            // event, no GetOverlappedResult. Chunked: one ReadFile is capped
+            // at 2^32-1 bytes.
             OVERLAPPED ov{};
             uint64_t cur = ref->file_offset + done;
             ov.Offset = (DWORD) (cur & 0xFFFFFFFFull);
             ov.OffsetHigh = (DWORD) (cur >> 32);
-            ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            if (!ov.hEvent) { err = "short read on " + ref->name; ok = false; break; }
             DWORD chunk = 0;
-            DWORD want = (DWORD) std::min<uint64_t>(ref->nbytes - done, (uint64_t) 1u << 31);
-            BOOL r = ReadFile(fds[ref->shard], staging.data() + done, want, nullptr, &ov);
-            DWORD e = r ? ERROR_SUCCESS : GetLastError();
-            if (!r && e != ERROR_IO_PENDING) { CloseHandle(ov.hEvent); err = "short read on " + ref->name; ok = false; break; }
-            if (!GetOverlappedResult(fds[ref->shard], &ov, &chunk, TRUE) || chunk == 0) {
-                CloseHandle(ov.hEvent); err = "short read on " + ref->name; ok = false; break;
+            DWORD want = (DWORD) std::min<uint64_t>(ref->nbytes - done, (uint64_t) 0x40000000ull);
+            if (!ReadFile(fds[ref->shard], staging.data() + done, want, &chunk, &ov) || chunk == 0) {
+                err = "short read on " + ref->name; ok = false; break;
             }
-            CloseHandle(ov.hEvent);
             done += (size_t) chunk;
         }
         if (!ok) break;

@@ -61,7 +61,8 @@ New-Item -ItemType Directory -Path "$Out\bin", "$Out\tools\console", "$Out\scrip
 Copy-Item 'build-portable\qwfn-server.exe', 'build-portable\qwfn-tok.exe' "$Out\bin\"
 foreach ($dll in @('ggml-base.dll', 'ggml.dll', 'llama.dll', 'ggml-cuda.dll')) {
   $f = Get-ChildItem -Path $GgmlLibs -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($f) { Copy-Item $f.FullName "$Out\bin\" }
+  if (-not $f) { throw "required $dll not found in $GgmlLibs (a CUDA-less llama.cpp build would ship a CPU-only bundle labeled CUDA)" }
+  Copy-Item $f.FullName "$Out\bin\"
 }
 Get-ChildItem -Path $GgmlLibs -Filter 'ggml-cpu*.dll' -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$Out\bin\" }
 foreach ($pat in @('cudart64_*.dll', 'cublas64_*.dll', 'cublasLt64_*.dll')) {
@@ -70,7 +71,7 @@ foreach ($pat in @('cudart64_*.dll', 'cublas64_*.dll', 'cublasLt64_*.dll')) {
 Copy-Item 'tools\qwfn_console.py', 'tools\qwfn_router.py' "$Out\tools\"
 Copy-Item 'tools\console\index.html' "$Out\tools\console\"
 Copy-Item 'scripts\qwfnfer.bat' "$Out\qwfnfer.bat"
-Copy-Item 'README.md', 'LICENSE' $Out
+Copy-Item 'README.md', 'LICENSE', 'SETUP.md', 'BUILD_WINDOWS.md' $Out
 $Version | Out-File "$Out\VERSION" -Encoding ascii
 @"
 qwfnfer $Version -- Qwen3.8-Flash-Next on one 16 GB GPU (Windows x86_64, NVIDIA)
