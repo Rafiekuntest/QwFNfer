@@ -26,7 +26,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$LlamaCppRoot = (Join-Path $env:USERPROFILE '.unsloth\llama.cpp'),
+  [string]$LlamaCppRoot = $(if ($env:LLAMA_CPP_ROOT) { $env:LLAMA_CPP_ROOT } else { Join-Path $env:USERPROFILE '.unsloth\llama.cpp' }),
   [string]$GgmlLibs     = '',
   [string]$CudaLibs     = '',
   [string]$Version      = ''
