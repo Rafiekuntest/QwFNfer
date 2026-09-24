@@ -321,7 +321,9 @@ def scan_models(skipped=None):
             d = os.path.dirname(f); stem = shard_stem(base)
             arch = gguf_arch(f)
             if arch is not None and arch != ARCH:
-                skip(f, f"a {arch} GGUF; this engine runs {ARCH} (Qwen3.8-Flash-Next)"); continue
+                skip(f, f"a {arch} GGUF; this engine serves only the MoE graph {ARCH} (Qwen3.8-Flash-Next). "
+                        "Dense checkpoints such as Qwen3.8-27B (qwen35) are a different, dense graph with no experts "
+                        "to cache -- run those in llama.cpp or Ollama"); continue
             if arch is None and "Qwen3.8-Flash-Next" not in f:
                 skip(f, "the GGUF header could not be read and the name is not Qwen3.8-Flash-Next" if os.path.exists(real)
                         else "a broken symlink: the blob it points at is missing (re-run the hf download)"); continue

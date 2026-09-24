@@ -85,6 +85,25 @@ things adapt automatically:
 - Speed predictions stay 125B-fitted until Auto-tune measures your machine;
   treat pre-tune tok/s on other sizes as a starting point, not a promise.
 
+## What about Qwen3.8-27B (non-flash)?
+
+Not here - and that's structural, not a missing flag. The 27B is a **dense**
+`qwen35` model (64 plain layers, no routed experts); this engine *is* an MoE
+runtime (expert tiers, speculative prefetch, in-graph MoE, PLE table). There is
+nothing in it for a dense checkpoint to use, so it refuses those files up front
+- in the console's scan list and on the command line - instead of failing
+halfway. Run the 27B where dense models run best:
+
+```powershell
+hf download qtum/Qwen3.8-27B-GGUF --include "Qwen3.8-27B-Q4_K_M.gguf"
+llama-cli -m Qwen3.8-27B-Q4_K_M.gguf -c 8192
+```
+
+(Q4_K_M is about 16.5 GB, the default pick; smaller VRAM? take `Q3_K_M` at
+about 13 GB or `IQ3_XXS` at about 11.6 GB. Add `--mmproj mmproj-...gguf` for
+vision.) `llama-server` speaks the same OpenAI endpoint shape, so your clients
+transfer over.
+
 Anything that is not `qwen4exp` is refused at scan time with the reason named
 (the engine implements that graph, not a general one).
 
