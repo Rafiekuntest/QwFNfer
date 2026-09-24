@@ -123,6 +123,38 @@ default pick; smaller VRAM? take `Q3_K_M` at about 13 GB or `IQ3_XXS` at about
 11.6 GB. Add `--mmproj mmproj-...gguf` for vision.) `llama.exe serve` speaks
 the same OpenAI endpoint shape, so your clients transfer over.
 
+One rule for both engines: **qwfnfer and llama.cpp read GGUF, not safetensors.**
+Got `.safetensors` files? Convert once (that's what `serve-27b.ps1` automates
+above, and what `convert_hf_to_gguf.py` + `llama-quantize` do by hand), then
+serve the GGUF. Never rename a `.safetensors` to `.gguf` — the formats are
+unrelated and the loader will just report a bad magic.
+
+## Sending logs (so it can be fixed)
+
+Something broken? Collect these three things and open an issue at
+[github.com/Rafiekuntest/QwFNfer/issues](https://github.com/Rafiekuntest/QwFNfer/issues)
+(bug-report template walks you through it):
+
+1. **What you did + what happened**: quant and tier (the Serve banner line
+   names every flag — paste it), the model folder layout, what you expected.
+2. **The server log**: `%LOCALAPPDATA%\qwfn-console\server.log` — tail 60
+   lines is usually enough (the console's Log tab shows the same). For the
+   27B path: the `serve-27b.ps1` console output instead.
+3. **Live numbers**: while it runs, save `http://127.0.0.1:8080/stats`
+   (qwfnfer) or `http://127.0.0.1:8081/health` + the request that failed
+   (27B/llama.cpp), plus your GPU + driver (`nvidia-smi`), RAM, and where the
+   model sits (NVMe? network drive? that matters more than people think).
+
+No logs, no fix — "it doesn't work" can't be debugged. With the three above,
+most issues get a cause within one reply. What the template asks for beyond
+this (versions, repro steps) is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+(Modern llama.cpp ships one `llama.exe` with `cli`/`serve` subcommands, not
+separate `llama-cli`/`llama-server` binaries. Q4_K_M is about 16.5 GB, the
+default pick; smaller VRAM? take `Q3_K_M` at about 13 GB or `IQ3_XXS` at about
+11.6 GB. Add `--mmproj mmproj-...gguf` for vision.) `llama.exe serve` speaks
+the same OpenAI endpoint shape, so your clients transfer over.
+
 Anything that is not `qwen4exp` is refused at scan time with the reason named
 (the engine implements that graph, not a general one).
 
@@ -155,4 +187,4 @@ Windows specifics: the Linux build reads via `io_uring`; this port uses a thread
 | Engine missing-DLL error | Bundle users: everything is in `bin\`; source users: the console adds the llama.cpp `build\bin` to `PATH` automatically |
 | Release zip won't install | `install.ps1` refuses only on <64-bit, missing Python, or an engine that won't load — read its message, it names the cause |
 
-Still stuck? Open an issue (see [CONTRIBUTING.md](CONTRIBUTING.md)): paste the tier card, the Log tab tail, your GPU/RAM/drive, and `/stats` output.
+Still stuck? Open an issue (see [CONTRIBUTING.md](CONTRIBUTING.md)): paste the tier card, the Log tab tail, your GPU/RAM/drive, and `/stats` output. Full checklist of what to collect: [Sending logs](#sending-logs-so-it-can-be-fixed) above.
