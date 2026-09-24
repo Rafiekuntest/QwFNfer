@@ -95,7 +95,21 @@ nothing in it for a dense checkpoint to use, so it refuses those files up front
 halfway. Run the 27B where dense models run best: any **llama.cpp that knows
 the `qwen35` architecture (build b10502 or newer, current master, or the
 pinned Unsloth mix in BUILD_WINDOWS.md** - verified working, 27 tok/s on CPU
-for the 0.8B sibling):
+for the 0.8B sibling, and the safetensors-to-serving loop below proven
+end to end on Windows).
+
+Easiest: one script does convert + serve from your safetensors folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\serve-27b.ps1 -ModelDir D:\models\Qwen3.8-27B -Quant Q4_K_M
+```
+
+It makes a converter venv once (torch CPU), converts to F16, quantizes to your
+tier, and serves on `http://127.0.0.1:8081` (ctx 131072 — the 27B's KV is
+cheap: only 16 of its 64 layers keep one). Needs ~70 GB free during the run
+for the 50 GB F16 intermediate (deleted after, unless `-KeepIntermediate`).
+Tiers: `Q4_K_M` (~16.5 GB, default), `Q3_K_M` (~13 GB), `IQ3_XXS` (~11.6 GB).
+By hand instead:
 
 ```powershell
 hf download qtum/Qwen3.8-27B-GGUF --include "Qwen3.8-27B-Q4_K_M.gguf"
