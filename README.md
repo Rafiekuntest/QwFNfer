@@ -4,10 +4,14 @@
 </div>
 
 <p align="center">
-| <a href="#getting-started"><b>Getting Started</b></a> | <a href="#results"><b>Results</b></a> | <a href="#how-it-works"><b>How it works</b></a> | <a href="#built-around-the-qwen4-architecture"><b>Qwen4</b></a> | <a href="#faq"><b>FAQ</b></a> | <a href="https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF"><b>Model (Unsloth GGUF)</b></a> |
+<b>✅ Windows 10/11 supported on this fork</b> — <a href="SETUP.md"><b>Setup guide</b></a> · <a href="https://github.com/Rafiekuntest/QwFNfer/releases"><b>Download release</b></a> · Linux upstream is <a href="https://github.com/Apolog1ze-Dev/QwFNfer">Apolog1ze-Dev/QwFNfer</a>
 </p>
 
-Run a **125B** open-weight MoE on the gaming PC you already own, at interactive speed: **15–25 tok/s**.
+<p align="center">
+| <a href="#getting-started"><b>Getting Started</b></a> | <a href="#windows"><b>Windows</b></a> | <a href="#results"><b>Results</b></a> | <a href="#how-it-works"><b>How it works</b></a> | <a href="#built-around-the-qwen4-architecture"><b>Qwen4</b></a> | <a href="#faq"><b>FAQ</b></a> | <a href="https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF"><b>Model (Unsloth GGUF)</b></a> |
+</p>
+
+Run a **125B** open-weight MoE on the gaming PC you already own, at interactive speed: **15–25 tok/s** — on Linux *and* Windows.
 
 > **Windows fork.** This repo is [Rafiekuntest/QwFNfer](https://github.com/Rafiekuntest/QwFNfer), a Windows port of [Apolog1ze-Dev/QwFNfer](https://github.com/Apolog1ze-Dev/QwFNfer) (Linux upstream). Same engine, same tiers, same console — the `io_uring` NVMe layer is a thread pool with overlapped positional reads on Windows. **Start here: [SETUP.md](SETUP.md)** (simple install → model → run), [BUILD_WINDOWS.md](BUILD_WINDOWS.md) (compile it yourself), [CONTRIBUTING.md](CONTRIBUTING.md) (issues, PRs).
 
@@ -23,11 +27,28 @@ Several optimizations and tweaks were introduced including fixing a MTP and visi
 
 qwfnfer is a purpose-built inference engine for Qwen3.8-Flash-Next (GGUF architecture `qwen4exp`): 48 layers, 512 routed experts with top-10 routing, DeltaNet recurrent layers and Qwen Sparse Attention. It is not a llama.cpp fork. It uses ggml's quantized kernels and CUDA backend and llama.cpp's tokenizer, and owns everything above them: the model graph, the memory hierarchy, the expert cache, prefill, the server and the console. Its core features:
 
-- **Three-tier expert runtime**: experts live in VRAM, in pinned RAM and on the NVMe. Reads happen at an expert's natural 0.6–1.2 MB size over io_uring/O_DIRECT (23× the bandwidth of 4 KiB demand paging on the same disk), VRAM-resident experts compute inside replayed CUDA graphs, and the next layer's routing is predicted from the residual and prefetched while the current layer computes.
+- **Three-tier expert runtime**: experts live in VRAM, in pinned RAM and on the NVMe. Reads happen at an expert's natural 0.6–1.2 MB size over io_uring/O_DIRECT on Linux (overlapped positional reads with `FILE_FLAG_NO_BUFFERING` on Windows) — 23× the bandwidth of 4 KiB demand paging on the same disk. VRAM-resident experts compute inside replayed CUDA graphs, and the next layer's routing is predicted from the residual and prefetched while the current layer computes.
 - **Long context that stays flat**: 163,840 tokens with q8_0 KV on 16 GB (262,144 with the attention state in pinned RAM). Decode attention costs the same 0.55 ms per layer at 4K and at 160K (sparse attention over pooled block keys), and a layer-major prefill streams experts through VRAM at 350–590 tok/s depending on the batch instead of paging them.
 - **OpenAI-compatible server, and the Anthropic Messages API for Claude Code**: streaming, thinking with `reasoning_effort` and a thinking budget, tool calling, vision, `/props`, `/stats`, `/slots`, `/metrics` and llama.cpp-style `timings`. Works with Unsloth Studio, Open WebUI or any OpenAI client, and `POST /v1/messages` lets Claude Code run on it with one environment variable.
 - **Console**: a local page that finds the downloaded quants (the Hugging Face cache and any folder you add), sizes the flags for *your* GPU and RAM behind four tiers (Chat at 32K context, Agentic coding at 128K, Agentic coding+ at 256K, and a Custom tier you save), auto-tunes them on your hardware (the drive's read rate, a thread sweep on the running server, the KV precision the GPU has room for, the memory the RAM tier can take, then a measured verification), starts and stops the server, chats with it, and shows it live: prefill progress, input / cached / output tokens, tokens/s, the last request and the session's totals.
 - **Measured, not projected**: the forward pass is validated bit-exact against llama.cpp, and every number here is a real run on the reference machine, same file, same settings.
+
+## Windows
+
+Yes, it runs on Windows — this fork exists for exactly that. Same engine, same
+console, same tiers; only the OS layer differs (`io_uring` → overlapped
+positional reads, `mmap` → file mapping, `liburing` → nothing). Full guide:
+**[SETUP.md](SETUP.md)**. The short version:
+
+**Needs:** 64-bit Windows 10/11 · NVIDIA GPU (16 GB VRAM reference, driver 580+) · ~30 GB RAM · NVMe · Python 3.10+.
+
+**Install** (from [Releases](https://github.com/Rafiekuntest/QwFNfer/releases)): unzip `qwfnfer-windows-x86_64-cuda.zip` anywhere, run `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`, download the model once (`hf download unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-Q4_K_XL/*" "mmproj-F16.gguf"`), run `qwfnfer`, pick a tier, press **Auto-tune & start**. Endpoint: `http://127.0.0.1:8080/v1`, model id `qwen3.8-flash-next` — any OpenAI client, plus Claude Code natively (`ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
+
+**Smaller GPUs** (verified in the planner): 12 GB (RTX 5070) gets a ~4 GB VRAM tier on Chat (~13 tok/s); 8 GB (RTX 5060) runs tierless at ~7–8 tok/s — slower, not broken. 50-series/Blackwell is covered by the bundled CUDA 13 runtime. If even the dense core can't fit, the console refuses with the numbers instead of dying in `cudaMalloc`.
+
+**Other Qwen3.8 checkpoints** (e.g. 27B-class): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named.
+
+Bugs and ideas: [issues](https://github.com/Rafiekuntest/QwFNfer/issues) ([CONTRIBUTING.md](CONTRIBUTING.md)). Build it yourself: [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
 
 ## Results
 
@@ -89,7 +110,7 @@ The harness reads the numbers from the server's own `/stats` around the run. Wha
 curl -fsSL https://raw.githubusercontent.com/Apolog1ze-Dev/QwFN/master/scripts/install.sh | bash
 ```
 
-Or download `qwfnfer-linux-x86_64-cuda.zip` from the [Releases](https://github.com/Apolog1ze-Dev/QwFN/releases) page, unzip it anywhere and run `./qwfnfer`. The bundle carries the engine, the console and every library it needs (ggml, the CUDA runtime, the C++ and OpenMP runtimes, liburing); only the NVIDIA driver comes from your system. The installer puts it under `~/.local/share/qwfnfer` and links `~/.local/bin/qwfnfer`; delete those two paths to uninstall.
+Or download `qwfnfer-linux-x86_64-cuda.zip` from the [Releases](https://github.com/Apolog1ze-Dev/QwFN/releases) page, unzip it anywhere and run `./qwfnfer`. The bundle carries the engine, the console and every library it needs (ggml, the CUDA runtime, the C++ and OpenMP runtimes, liburing — on Windows: ggml/llama/CUDA DLLs beside the binaries, no liburing); only the NVIDIA driver comes from your system. The installer puts it under `~/.local/share/qwfnfer` and links `~/.local/bin/qwfnfer`; delete those two paths to uninstall.
 
 **2. Get the model.** The console finds Qwen3.8-Flash-Next GGUFs in your Hugging Face cache (wherever `HF_HUB_CACHE`, `HF_HOME` or `XDG_CACHE_HOME` put it), or in any folder you add under *Model locations*. UD-Q4_K_XL is the quality choice, UD-Q3_K_XL the faster one; the `mmproj` file adds vision.
 
