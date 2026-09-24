@@ -28,7 +28,7 @@ jobs:
       - name: Generate cublas import libs
         shell: pwsh
         run: |
-          $cu = (Get-Content $env:GITHUB_ENV | Select-String '^CU13=(.*)' | ForEach-Object { $_.Matches.Groups[1].Value }).Trim()
+          $cu = $env:CU13
           "CUDIR=$cu" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           foreach ($d in 'cublas64_13.dll','cublasLt64_13.dll') {
             $base = $d -replace '\.dll$',''; $lib = ($base -replace '64_13$','') + '.lib'
