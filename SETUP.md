@@ -54,6 +54,40 @@ It opens `http://127.0.0.1:8090`. Pick your quant and a tier:
 
 Press **Auto-tune & start** (about five minutes, once per model): it measures your drive, sweeps the CPU thread count on the running server, sizes the RAM tier with headroom to spare, and verifies on a short chat plus a 16K–32K-token document. After that the tier card shows your measured speed. **Start server** skips re-measuring; **Self-test** measures a running server.
 
+## Smaller GPUs: 8 GB and 12 GB (RTX 5060 / 5070 and friends)
+
+It runs — slower, not broken. The console sizes everything from the VRAM it
+finds, and the engine shrinks its tier to what fits (or runs tierless):
+
+| GPU | What to expect (UD-Q4_K_XL, predictions) |
+|---|---|
+| 16 GB (4080-class) | 6–8 GB VRAM tier, 13–16 tok/s chat |
+| 12 GB (5070) | ~4 GB tier on Chat (~13 tok/s); Agentic tiers step down to 64K to keep a tier |
+| 8 GB (5060) | No VRAM tier — experts stream from RAM/NVMe, ~7–8 tok/s. Use the Chat tier |
+
+Rules of thumb: the ~4.8 GB dense core must fit with room to spare — if it
+can't, starting the server refuses up front with the numbers instead of dying
+in `cudaMalloc`. 50-series (Blackwell, sm_120a) is covered by the bundled
+CUDA 13 runtime and ggml build; driver 580+ still required. 16 GB RAM pairings
+work but keep the headroom at 3 GB: the RAM tier is what carries an 8 GB GPU,
+and every GB is ~3% of decode.
+
+## Other Qwen3.8 checkpoints (27B-class and other sizes)
+
+Any `qwen4exp`-architecture GGUF loads: layer counts, experts, context length
+and KV geometry are read from the file's own metadata, not hardcoded. Two
+things adapt automatically:
+
+- The console reads each download's GGUF headers (expert block size, dense
+  core, trained context, attention dims) and plans from those — a 128K-trained
+  checkpoint gets its presets capped at 128K with a note, instead of a 256K
+  tier that would fail.
+- Speed predictions stay 125B-fitted until Auto-tune measures your machine;
+  treat pre-tune tok/s on other sizes as a starting point, not a promise.
+
+Anything that is not `qwen4exp` is refused at scan time with the reason named
+(the engine implements that graph, not a general one).
+
 ## 5. Point your tools at it
 
 Endpoint: `http://127.0.0.1:8080/v1` (any API key works — none is checked). Model id: `qwen3.8-flash-next`.

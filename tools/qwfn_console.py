@@ -104,6 +104,111 @@ def shard_stem(base):
     return b
 
 _ARCH_CACHE = {}
+_GGUF_GEOM_CACHE = {}
+
+def _gguf_rd_str(f):
+    n, = struct.unpack("<Q", f.read(8)); return f.read(n).decode("utf-8", "replace")
+
+def _gguf_skip_val(f, t):
+    # Value bytes by GGUF type id (7 is bool). Strings and arrays are walked
+    # (arrays element by element; big tokenizer arrays are seeks, not reads).
+    if t in (0, 1, 7): f.read(1)
+    elif t in (2, 3): f.read(2)
+    elif t in (4, 5, 6): f.read(4)
+    elif t in (10, 11, 12): f.read(8)
+    elif t == 8: _gguf_rd_str(f)
+    elif t == 9:
+        et, = struct.unpack("<I", f.read(4)); n, = struct.unpack("<Q", f.read(8))
+        if et == 8:
+            for _ in range(n):
+                ln, = struct.unpack("<Q", f.read(8)); f.seek(ln, 1)
+        else:
+            f.seek({0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}[et] * n, 1)
+    else: raise ValueError("unknown GGUF type %r" % (t,))
+
+def _gguf_rd_int(f, t):
+    w = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 10: 8, 11: 8}.get(t)
+    if w is None: _gguf_skip_val(f, t); return None
+    return int.from_bytes(f.read(w), "little", signed=t in (1, 3, 5, 11))
+
+def gguf_geom(shard_paths):
+    """Per-checkpoint geometry from the GGUF headers (weights never read): the
+    routed-expert block size, the GPU dense core, layer/expert counts, trained
+    context and KV dims. Lets the planner size tiers for any qwen4exp
+    checkpoint, not just the 125B one the fitted tables describe. Tensor bytes
+    come from offset differences (exact, no quant-type table needed). None when
+    anything is unreadable -- callers fall back to the tables."""
+    try:
+        key = tuple((p, s.st_mtime, s.st_size) for p, s in ((p, os.stat(p)) for p in shard_paths))
+        if key in _GGUF_GEOM_CACHE: return _GGUF_GEOM_CACHE[key]
+        g = _walk_gguf([p for p, _, _ in key])
+        _GGUF_GEOM_CACHE[key] = g
+        return g
+    except Exception:
+        return None
+
+def _walk_gguf(paths):
+    meta, shards = {}, []
+    for p in paths:
+        with open(p, "rb") as f:
+            if f.read(4) != b"GGUF": raise ValueError("magic")
+            ver, = struct.unpack("<I", f.read(4))
+            if ver < 2: raise ValueError("version")
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                k = _gguf_rd_str(f); t, = struct.unpack("<I", f.read(4))
+                v = _gguf_rd_int(f, t)
+                if v is not None: meta[k] = v
+            infos = []
+            for _ in range(n_tensors):
+                name = _gguf_rd_str(f); nd, = struct.unpack("<I", f.read(4))
+                f.seek(8 * nd + 4, 1); off, = struct.unpack("<Q", f.read(8))
+                infos.append((name, off))
+            data_start = (f.tell() + 31) & ~31
+            f.seek(0, 2); size = f.tell()
+            shards.append((infos, data_start, size))
+    arch = None
+    for p in paths:
+        a = gguf_arch(p)
+        if a: arch = a; break
+    if arch != ARCH: raise ValueError("arch " + str(arch))
+    A = arch + "."
+    def I(k):
+        v = meta.get(A + k)
+        return v if isinstance(v, int) else 0
+    n_layer, n_expert, n_used = I("block_count"), I("expert_count"), I("expert_used_count")
+    if not (n_layer and n_expert and n_used): raise ValueError("dims")
+    interval = I("full_attention_interval")
+    # Tensor bytes per shard from offset differences (exact for every quant).
+    names = {}  # name -> nbytes (first shard wins; tensors live in exactly one)
+    for infos, data_start, size in shards:
+        ordered = sorted(infos, key=lambda t: t[1])
+        for i, (name, off) in enumerate(ordered):
+            end = ordered[i + 1][1] if i + 1 < len(ordered) else size - data_start
+            nbytes = end - off
+            if nbytes <= 0 or name in names: continue
+            names[name] = nbytes
+    def is_expert(n): return "_exps.weight" in n   # mirrors weights::declare_dense_core
+    experts = sum(b for n, b in names.items() if is_expert(n))
+    ple = names.get("per_layer_token_embd.weight", 0)
+    tok = names.get("token_embd.weight", 0)
+    total = sum(names.values())
+    # Layer-0 expert block = gate+up+down slices; each expert tensor holds
+    # n_expert equal slices, so one slice is 1/n_expert of the tensor.
+    block = 0
+    for part in ("ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"):
+        b = names.get("blk.0." + part)
+        if not b: raise ValueError("expert tensors")
+        block += b / n_expert
+    dense_gpu = total - experts - ple - tok   # what the engine keeps on the device (token_embd is host-mapped)
+    if dense_gpu <= 0: raise ValueError("dense")
+    n_attn = (n_layer // interval) if interval else 0
+    return {"block_mb": block / 1e6, "core_gb": dense_gpu / 1e9,
+            "n_layer": n_layer, "n_expert": n_expert, "n_expert_used": n_used,
+            "n_ctx_train": I("context_length") or 262144, "n_embd": I("embedding_length"),
+            "n_attn": n_attn, "n_head_kv": I("attention.head_count_kv") or 2,
+            "kv_head_dim": (I("attention.key_length") or 256) + (I("attention.value_length") or 256)}
+
 def gguf_arch(path):
     """general.architecture from the GGUF header (the first keys), None if unreadable."""
     try:
@@ -238,8 +343,10 @@ def scan_models(skipped=None):
             mm = find_mmproj(d); mtp = find_mtp(d)
             if mm and not os.path.exists(mm): mm = None
             if mtp and not os.path.exists(mtp): mtp = None
+            shard_files = sorted(shards)
             out.append({"id": len(out), "name": name, "path": f, "dir": d, "location": loc["path"], "repo": repo_label(f, loc),
-                        "size_gb": round(total / 1e9, 1), "shards": len(shards), "probe_file": probe_file, "quant": key or name, "known_quant": bool(key),
+                        "size_gb": round(total / 1e9, 1), "shards": len(shards), "shard_files": shard_files, "probe_file": probe_file, "quant": key or name, "known_quant": bool(key),
+                        "geom": gguf_geom(shard_files),
                         "mmproj": mm, "mmproj_gb": round(os.stat(mm).st_size / 1e9, 2) if mm else 0.0,
                         "mtp": mtp, "mtp_gb": round(os.stat(mtp).st_size / 1e9, 2) if mtp else 0.0})
     return out
@@ -477,20 +584,24 @@ LOOKUPS_PER_TOKEN = 480   # 48 layers x 10 routed experts
 STATE_HOST_OPTIONS = ["none", "idx", "kv,idx"]
 KV_TYPES = ["q4_0", "q8_0", "f16"]
 KV_MB_PER_K = {"q4_0": 6.9, "q8_0": 13.1, "f16": 26.2}      # KV MB per 1K tokens
-def state_parts(ctx, kv):
+# Bytes per KV element behind the table above (fitted, incl. row overhead):
+# q4_0 0.576, q8_0 1.09, f16 2.18. Lets the table follow another checkpoint's
+# attention geometry: MB/1K = n_attn * n_head_kv * (key_len + val_len) * BPE.
+KV_BYTES_PER_ELEM = {"q4_0": 0.576, "q8_0": 1.09, "f16": 2.18}
+def state_parts(ctx, kv, _kv=None, _idx=3.1, _pooled=0.8):
     k = ctx / 1024 / 1024
-    return {"kv": KV_MB_PER_K[kv] * k, "idx": 3.1 * k, "pooled": 0.8 * k, "delta": 0.113}
-def state_gb(ctx, kv):
-    return sum(state_parts(ctx, kv).values())
-def state_host_gb(ctx, kv, state_host):
-    p = state_parts(ctx, kv)
+    return {"kv": (_kv or KV_MB_PER_K)[kv] * k, "idx": _idx * k, "pooled": _pooled * k, "delta": 0.113}
+def state_gb(ctx, kv, _kv=None, _idx=3.1, _pooled=0.8):
+    return sum(state_parts(ctx, kv, _kv, _idx, _pooled).values())
+def state_host_gb(ctx, kv, state_host, _kv=None, _idx=3.1, _pooled=0.8):
+    p = state_parts(ctx, kv, _kv, _idx, _pooled)
     return (p["kv"] if "kv" in state_host else 0.0) + (p["idx"] if "idx" in state_host else 0.0)
-def state_vram_gb(ctx, kv, state_host):
-    return state_gb(ctx, kv) - state_host_gb(ctx, kv, state_host)
-def state_host_ms(kv, state_host):
-    return (0.35 if "idx" in state_host else 0.0) + (1.7 * KV_MB_PER_K[kv] / KV_MB_PER_K["q4_0"] if "kv" in state_host else 0.0)
+def state_vram_gb(ctx, kv, state_host, _kv=None, _idx=3.1, _pooled=0.8):
+    return state_gb(ctx, kv, _kv, _idx, _pooled) - state_host_gb(ctx, kv, state_host, _kv, _idx, _pooled)
+def state_host_ms(kv, state_host, _kv=None, _idx_ms=0.35):
+    return (_idx_ms if "idx" in state_host else 0.0) + (1.7 * (_kv or KV_MB_PER_K)[kv] / (_kv or KV_MB_PER_K)["q4_0"] if "kv" in state_host else 0.0)
 
-def predict(quant, tier_gb, ram_gb, long_doc, extra_ms=0.0, nvme_mb_per_ms=None):
+def predict(quant, tier_gb, ram_gb, long_doc, extra_ms=0.0, nvme_mb_per_ms=None, lookups=None, block_mb=None):
     # Per token: graph A, the CPU-served experts, and the blocks read this token. The
     # reads are what the tiers' size buys -- the prefetch turns most of them into "hits"
     # but not into fewer bytes -- so the model is residency, the share of lookups served
@@ -499,13 +610,16 @@ def predict(quant, tier_gb, ram_gb, long_doc, extra_ms=0.0, nvme_mb_per_ms=None)
     # 33 / 26 / 20% on a long document. The other constants were fitted to ten measured
     # points (three RAM sizes x two replays on Q4; Q3 and IQ1_S at 10.5 GB): rms error
     # 2.7%. A GB of RAM tier is worth about 3% of decode at 131K.
-    block = QUANT_BLOCK_MB.get(quant, 2.4)
+    # lookups/block_mb let another checkpoint size itself: layers x top-k lookups,
+    # and that checkpoint's expert block. GPU/CPU ms stay 125B-fitted until the tune
+    # measures the machine -- predictions for other sizes are starting points.
+    block = block_mb or QUANT_BLOCK_MB.get(quant, 2.4)
     nvme = nvme_mb_per_ms or NVME_MB_PER_MS
     vb = max(0.0, tier_gb) * 1024 / block; rb = max(0.0, ram_gb) * 1024 / block
     miss = (0.63 * math.exp(-(vb + rb) / 6400)) if long_doc else (0.46 * math.exp(-(vb + rb) / 5900))
     f_v = max(0.0, 0.85 * (1 - math.exp(-vb / 1500)) - (0.06 if long_doc else 0.0)) if vb > 0 else 0.0
     cpu = max(0.0, 1.0 - f_v - miss)
-    ms = QUANT_GPU_MS.get(quant, 20.0) + extra_ms + LOOKUPS_PER_TOKEN * (cpu * QUANT_CPU_MS.get(quant, 0.09) + miss * block / nvme) + 6.0
+    ms = QUANT_GPU_MS.get(quant, 20.0) + extra_ms + (lookups or LOOKUPS_PER_TOKEN) * (cpu * QUANT_CPU_MS.get(quant, 0.09) + miss * block / nvme) + 6.0
     return {"tok_s": round(1000 / ms, 1), "vram_served": round(f_v, 3), "hit": round(1.0 - miss, 3), "blocks": int(vb)}
 
 def tune_calibration(model):
@@ -524,7 +638,38 @@ def recommend(model, hw, preset="coding", vision=None, state_host=None, kv=None,
     drive's rate, a RAM correction); without it the reference machine's constants apply."""
     calib = calib if calib is not None else tune_calibration(model)
     q = model["quant"]
-    core = QUANT_CORE_GB.get(q, 4.7)
+    # Per-checkpoint geometry from the GGUF headers (block/core/layers/context/KV
+    # dims); without it the 125B-fitted tables below stand in and the tune fixes
+    # the rest. Unknown quants keep table behavior bit-for-bit (scale ratio 1).
+    g = model.get("geom") or {}
+    block_mb = g.get("block_mb") or QUANT_BLOCK_MB.get(q, 2.4)
+    core = g.get("core_gb") or QUANT_CORE_GB.get(q, 4.7)
+    n_layer = g.get("n_layer") or 48
+    lookups = n_layer * (g.get("n_expert_used") or 10)
+    n_train = g.get("n_ctx_train") or 262144
+    n_attn = g.get("n_attn", 12)
+    if g.get("n_head_kv") and g.get("kv_head_dim") and n_attn:
+        _per_tok = n_attn * g["n_head_kv"] * g["kv_head_dim"]
+        KV_T = {k: _per_tok * b / 1048576 for k, b in KV_BYTES_PER_ELEM.items()}
+        IDX_MK, POOLED_MK = 3.1 * n_attn / 12, 0.8 * n_attn / 12
+    else:
+        KV_T, IDX_MK, POOLED_MK = None, 3.1, 0.8
+    IDX_MS = 0.35 * IDX_MK / 3.1
+    if g.get("block_mb"):
+        LEND_SCALE = g["block_mb"] / (QUANT_BLOCK_MB.get(q) or g["block_mb"])
+    else:
+        LEND_SCALE = 1.0
+    # Local shadows so every call below prices this checkpoint, not the 125B one.
+    # (Assigned from globals(): a `def` of the same name anywhere in this scope
+    # would otherwise make the module-level name unreadable here.)
+    _G = globals()
+    _svg, _shg, _sg, _shm, _pred = (_G['state_vram_gb'], _G['state_host_gb'], _G['state_gb'], _G['state_host_ms'], _G['predict'])
+    def state_vram_gb(ctx, kv, sh): return _svg(ctx, kv, sh, KV_T, IDX_MK, POOLED_MK)
+    def state_host_gb(ctx, kv, sh): return _shg(ctx, kv, sh, KV_T, IDX_MK, POOLED_MK)
+    def state_gb(ctx, kv): return _sg(ctx, kv, KV_T, IDX_MK, POOLED_MK)
+    def state_host_ms(kv, sh): return _shm(kv, sh, KV_T, IDX_MS)
+    def predict(quant, tier_gb, ram_gb, long_doc, extra_ms=0.0, nvme_mb_per_ms=None):
+        return _pred(quant, tier_gb, ram_gb, long_doc, extra_ms, nvme_mb_per_ms, lookups, block_mb)
     nvme = calib.get("nvme_mb_per_ms") or NVME_MB_PER_MS
     # Vision: the projector runs on the CPU (weights in RAM, ~15 s per 1400x1000
     # screenshot on 8 cores), so it costs no VRAM at all -- nothing reserved, nothing
@@ -558,7 +703,7 @@ def recommend(model, hw, preset="coding", vision=None, state_host=None, kv=None,
     BATCH_LEND_GB = {2048: 3.9, 4096: 4.4, 8192: 4.98, 16384: 6.16}
     PREFILL_TPS   = {2048: 240, 4096: 300, 8192: 479, 16384: 722}   # Q4 on the reference NVMe; Q3 reads 36% less per sweep
     q3_adj = 0.27 if q == "Q3_K_XL" else 0.0
-    def lend_for(b): return BATCH_LEND_GB[b] - q3_adj
+    def lend_for(b): return BATCH_LEND_GB[b] * LEND_SCALE - q3_adj
     def batch_for(tier_gb):
         for b in (16384, 8192, 4096, 2048):
             if tier_gb - lend_for(b) >= 1.0: return b
@@ -665,12 +810,19 @@ def recommend(model, hw, preset="coding", vision=None, state_host=None, kv=None,
     tune = CONFIG["tune"].get(model["name"]) or {}
     for pid, label, ctx, blurb in PRESETS:
         o = option(ctx, vision); note = ""
-        if o["state_host"] != "none": note = "attention state in RAM (%s): %.1f GB of VRAM for the expert tier" % (o["state_host"], o["state_host_gb"])
+        if ctx > n_train:
+            # A tier cannot outrun the checkpoint's trained context (rope and the
+            # KV sizing assume it); cap the preset, custom stays the user's call.
+            ctx = n_train
+            note = "this checkpoint trained to %dK: tier capped there. " % (n_train // 1024)
+            o = option(ctx, vision)
+        if o["state_host"] != "none": note += "attention state in RAM (%s): %.1f GB of VRAM for the expert tier" % (o["state_host"], o["state_host_gb"])
         if o["tier_gb"] == 0:
-            fallback = [option(c, vision) for c in CTX_STEPS if c < ctx]
+            fallback = [option(c, vision) for c in CTX_STEPS if c < ctx and c <= n_train]
             fallback = [f for f in fallback if f["tier_gb"] > 0]
-            if fallback: o = fallback[-1]; note = "no room for an expert tier at %dK on this GPU: %dK instead" % (ctx // 1024, o["ctx"] // 1024)
-            else: note = "no room for a VRAM expert tier on this GPU: experts come from RAM and the NVMe"
+            if note and not note.endswith(" "): note += " "
+            if fallback: o = fallback[-1]; note += "no room for an expert tier at %dK on this GPU: %dK instead" % (ctx // 1024, o["ctx"] // 1024)
+            else: note += "no room for a VRAM expert tier on this GPU: experts come from RAM and the NVMe"
         t = {"id": pid, "label": label, "blurb": blurb, "ctx": ctx, "fits": o["ctx"] == ctx, "note": note, "ctx_actual": o["ctx"], "kv": o["kv"], "vision": o["vision"],
              "tier_gb": o["tier_gb"], "blocks": o["blocks"], "tok_s_short": o["tok_s_short"], "tok_s_long_doc": o["tok_s_long_doc"], "vram_served": o["vram_served"],
              "batch": o["batch"], "prefill_tps": o["prefill_tps"], "ram": o["ram"], "threads": o["threads"], "state_host": o["state_host"], "saved": True}
@@ -797,6 +949,18 @@ def start_server(model, s):
             return {"error": "no MTP/mtp-*.gguf in this model's repository: download it into the snapshot directory, or turn the draft head off"}
         if s.get("vision") and not model.get("mmproj"):
             return {"error": "no mmproj-*.gguf next to this model: download mmproj-F16.gguf into its snapshot directory, or turn Vision off"}
+        # Fail fast with a number, not a cudaMalloc in the log: the dense core
+        # plus this tier's attention state are hard allocations (the expert tier
+        # itself backs off on its own). 1 GB of slack for the CUDA context and
+        # graphs; below that the engine cannot load. Skipped when the GPU is
+        # not visible to nvidia-smi (let the engine report it instead).
+        core_gb = ((model.get("geom") or {}).get("core_gb") or QUANT_CORE_GB.get(model.get("quant"), 4.7))
+        hw0 = hardware()
+        if hw0["vram_total_mb"] > 0:
+            need = core_gb + state_vram_gb(int(s["ctx"]), s["kv"], s.get("state_host") or "none") + 1.0
+            if hw0["vram_total_mb"] / 1024.0 < need:
+                return {"error": "this tier needs ~%.1f GB of VRAM (%.1f GB dense core + %.1f GB attention state at %dK %s) but %s has %.1f GB. Pick the Chat tier, a smaller context, or a smaller checkpoint." % (
+                    need, core_gb, need - core_gb - 1.0, int(s["ctx"]) // 1024, s["kv"], hw0["gpu"] or "the GPU", hw0["vram_total_mb"] / 1024.0)}
         # The memory the plan assumed may be gone (a browser, a build): say so before the engine
         # clamps the tier. Read twice: right after a stop the arena's pages are still coming back.
         other = 10.0 if s.get("host_other_gb") is None else float(s["host_other_gb"])
