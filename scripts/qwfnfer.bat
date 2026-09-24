@@ -7,6 +7,9 @@ REM
 REM   qwfnfer                 open the console at http://127.0.0.1:8090
 REM   qwfnfer --no-browser    just run the console in this terminal
 REM   qwfnfer --port 8091     another console port (--server-port N for the engine's)
+REM   qwfnfer --start --model D:\models\flash-next\UD-Q4_K_XL\...-00001-of-00004.gguf
+REM                           serve that shard's model right away, even outside the
+REM                           scanned folders (its folder is saved as a location)
 setlocal EnableDelayedExpansion
 set "HERE=%~dp0"
 if "%HERE:~-1%"=="\" set "HERE=%HERE:~0,-1%"

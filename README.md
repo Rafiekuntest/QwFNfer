@@ -46,7 +46,7 @@ positional reads, `mmap` → file mapping, `liburing` → nothing). Full guide:
 
 **Smaller GPUs** (verified in the planner): 12 GB (RTX 5070) gets a ~4 GB VRAM tier on Chat (~13 tok/s); 8 GB (RTX 5060) runs tierless at ~7–8 tok/s — slower, not broken. 50-series/Blackwell is covered by the bundled CUDA 13 runtime. If even the dense core can't fit, the console refuses with the numbers instead of dying in `cudaMalloc`.
 
-**Other Qwen3.8 checkpoints** (e.g. 27B-class): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named. The engine reads **GGUF only** — safetensors go through conversion first. The dense non-flash 27B (`qwen35`) is a different graph and runs in llama.cpp instead (`scripts/serve-27b.ps1` converts your safetensors and serves them; `llama.exe cli`/`serve`, any build from b10502 up) — see [SETUP.md](SETUP.md).
+**Qwen3.8-Flash-Next** (the model this engine is built for): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named. The engine reads **GGUF only** — safetensors go through conversion first. Download wherever you like and point the console straight at it (its folder is adopted into the saved locations automatically): The dense non-flash 27B (`qwen35`) is a different graph and runs in llama.cpp instead (`scripts/serve-27b.ps1` converts your safetensors and serves them; `llama.exe cli`/`serve`, any build from b10502 up) — see [SETUP.md](SETUP.md).
 
 Bugs and ideas: [issues](https://github.com/Rafiekuntest/QwFNfer/issues) ([CONTRIBUTING.md](CONTRIBUTING.md)). Build it yourself: [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
 
@@ -118,10 +118,19 @@ Or download `qwfnfer-linux-x86_64-cuda.zip` from the [Releases](https://github.c
 hf download unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-Q4_K_XL/*" "mmproj-F16.gguf"
 ```
 
-**3. Run it.**
+**3. Run it.** Either open the console and pick the model:
 
 ```bash
 qwfnfer
+```
+
+or — when the files sit outside the Hugging Face cache (e.g. you used
+`--local-dir` below) — point it straight at the first shard; its folder is
+added to the saved locations automatically:
+
+```powershell
+hf download unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-Q4_K_XL/*" --local-dir D:\models\flash-next
+qwfnfer --start --model D:\models\flash-next\UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --no-browser
 ```
 
 It opens http://127.0.0.1:8090. Pick a downloaded quant and a tier: **Chat** (32K context), **Agentic coding** (128K), **Agentic coding+** (256K, the model's full trained context) or **Custom** (anything you set under *Advanced settings* and save). Press **Auto-tune & start**: the console measures the drive under the model (random 2 MiB reads, the pattern of an expert miss), plans every flag for your GPU and RAM with that rate (context; the KV cache at q8_0 whenever the plan can afford it, q4_0 only where it would not fit; the expert tiers, the prefill batch the tier can lend, the reserve, where the attention caches live; vision on when the `mmproj` file is next to the model, the draft head on when its file is there), starts the server, verifies it on a short chat and a 16K–32K-token document with a passphrase planted in it (prefill and decode tokens/s, and whether the answer found the passphrase), sweeps the CPU thread count live on that document's context (the physical cores unless another count measures over 3% faster), and measures the memory the server needs besides its RAM tier through the run, then re-sizes the tier to leave exactly the headroom you set (3 GB by default; a GB of tier is about 3% of decode) and restarts with it. About five minutes; the result is saved per model, the tier card then shows the measured speed instead of the prediction, and every tier for that model uses the measured thread count and drive rate from then on. **Start server** starts with the plan alone; **Self-test** measures a running server. The banner names the model, the tier and every flag it is running with; the Chat, Stats and Log tabs talk to it. Stats is live at one second: the prefill's progress inside a batch with the time left, input / cached / output tokens for the running request, the last request in full (how much of its prompt was reused, prefill and decode speed, why it finished), the session's totals, the cache hit rate and the endpoint. *Model locations* under the model list adds any folder that holds the shards. `qwfnfer --start` starts the last served model and tier as the console comes up. Stop it from the same page.

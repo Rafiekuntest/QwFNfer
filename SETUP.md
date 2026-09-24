@@ -43,6 +43,15 @@ The console finds downloads in your Hugging Face cache automatically. Put the fi
 qwfnfer
 ```
 
+If your GGUFs sit outside the Hugging Face cache (you downloaded with
+`--local-dir`, like the Flash-Next command most people use), skip the picking:
+point the console straight at the first shard and it serves right away (the
+folder is saved into *Model locations* automatically):
+
+```powershell
+qwfnfer --start --model D:\models\flash-next\UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --no-browser
+```
+
 It opens `http://127.0.0.1:8090`. Pick your quant and a tier:
 
 | Tier | Context | For |

@@ -1509,8 +1509,16 @@ class H(http.server.BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--port", type=int, default=8090); ap.add_argument("--server-port", type=int, default=8080)
     ap.add_argument("--start", action="store_true", help="start the last served model and tier right away")
-    ap.add_argument("--model", help="with --start: a model path or name instead of the last one"); ap.add_argument("--preset", help="with --start: chat | coding | coding_plus | custom")
+    ap.add_argument("--model", help="with --start: a model path or name instead of the last one. A path to a .gguf shard (or the folder holding the shards) also works when it lives outside every scanned location: its folder is added to the saved locations and rescanned"); ap.add_argument("--preset", help="with --start: chat | coding | coding_plus | custom")
     a = ap.parse_args(); STATE["port"] = a.server_port
+    if a.model and os.path.exists(a.model):
+        # A direct path (hf download --local-dir, a USB drive, ...): the scan only
+        # covers the Hugging Face caches plus saved locations, so adopt this folder
+        # or the shard's own folder and persist it -- then --start finds it by path.
+        d = os.path.abspath(a.model)
+        if not os.path.isdir(d): d = os.path.dirname(d)
+        if d != HF and d not in CONFIG["locations"]:
+            CONFIG["locations"].append(d); save_config()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", a.port), H)
     print(f"qwfn console on http://127.0.0.1:{a.port}  (server port {a.server_port}, models from {', '.join(l['path'] for l in model_locations() if l['builtin'])}" + (" and %d more location(s)" % len(CONFIG["locations"]) if CONFIG["locations"] else "") + ")", flush=True)
     if a.start:
