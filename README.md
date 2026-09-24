@@ -46,7 +46,7 @@ positional reads, `mmap` → file mapping, `liburing` → nothing). Full guide:
 
 **Smaller GPUs** (verified in the planner): 12 GB (RTX 5070) gets a ~4 GB VRAM tier on Chat (~13 tok/s); 8 GB (RTX 5060) runs tierless at ~7–8 tok/s — slower, not broken. 50-series/Blackwell is covered by the bundled CUDA 13 runtime. If even the dense core can't fit, the console refuses with the numbers instead of dying in `cudaMalloc`.
 
-**Other Qwen3.8 checkpoints** (e.g. 27B-class): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named.
+**Other Qwen3.8 checkpoints** (e.g. 27B-class): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named. The dense non-flash 27B (`qwen35`) is a different graph and runs in llama.cpp instead (`llama.exe cli`/`serve`, any build from b10502 up) — see [SETUP.md](SETUP.md).
 
 Bugs and ideas: [issues](https://github.com/Rafiekuntest/QwFNfer/issues) ([CONTRIBUTING.md](CONTRIBUTING.md)). Build it yourself: [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
 

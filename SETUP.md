@@ -92,17 +92,22 @@ Not here - and that's structural, not a missing flag. The 27B is a **dense**
 runtime (expert tiers, speculative prefetch, in-graph MoE, PLE table). There is
 nothing in it for a dense checkpoint to use, so it refuses those files up front
 - in the console's scan list and on the command line - instead of failing
-halfway. Run the 27B where dense models run best:
+halfway. Run the 27B where dense models run best: any **llama.cpp that knows
+the `qwen35` architecture (build b10502 or newer, current master, or the
+pinned Unsloth mix in BUILD_WINDOWS.md** - verified working, 27 tok/s on CPU
+for the 0.8B sibling):
 
 ```powershell
 hf download qtum/Qwen3.8-27B-GGUF --include "Qwen3.8-27B-Q4_K_M.gguf"
-llama-cli -m Qwen3.8-27B-Q4_K_M.gguf -c 8192
+llama.exe cli -m Qwen3.8-27B-Q4_K_M.gguf -c 8192       # chat in the terminal
+llama.exe serve -m Qwen3.8-27B-Q4_K_M.gguf -c 131072   # OpenAI endpoint for your clients
 ```
 
-(Q4_K_M is about 16.5 GB, the default pick; smaller VRAM? take `Q3_K_M` at
-about 13 GB or `IQ3_XXS` at about 11.6 GB. Add `--mmproj mmproj-...gguf` for
-vision.) `llama-server` speaks the same OpenAI endpoint shape, so your clients
-transfer over.
+(Modern llama.cpp ships one `llama.exe` with `cli`/`serve` subcommands, not
+separate `llama-cli`/`llama-server` binaries. Q4_K_M is about 16.5 GB, the
+default pick; smaller VRAM? take `Q3_K_M` at about 13 GB or `IQ3_XXS` at about
+11.6 GB. Add `--mmproj mmproj-...gguf` for vision.) `llama.exe serve` speaks
+the same OpenAI endpoint shape, so your clients transfer over.
 
 Anything that is not `qwen4exp` is refused at scan time with the reason named
 (the engine implements that graph, not a general one).
