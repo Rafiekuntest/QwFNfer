@@ -14,23 +14,59 @@ reading with positional `ReadFile` + `OVERLAPPED` (handles opened with
 - Python 3.10+ (console + launcher)
 - A built [llama.cpp](https://github.com/unslothai/llama.cpp) tree at
   `%USERPROFILE%\.unsloth\llama.cpp`, branch `b10798-mix-659e406` — the mix
-  the forward pass is validated against:
+  the forward pass is validated against.
+
+No admin rights and no toolkit installer? The whole CUDA side works from
+NVIDIA's pip wheels (no admin needed) — this is how the first release bundle
+was built:
 
 ```powershell
-git clone https://github.com/unslothai/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
-cd $env:USERPROFILE\.unsloth\llama.cpp; git checkout b10798-mix-659e406
-cmake -S . -B build -DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120" `
-  -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF `
+python -m venv E:\cuda-env; E:\cuda-env\Scripts\python -m pip install --extra-index-url https://pypi.ngc.nvidia.com nvidia-cuda-nvcc nvidia-cuda-runtime nvidia-cublas nvidia-cuda-cccl
+```
+
+That gives `E:\cuda-env\Lib\site-packages\nvidia\cu13` with `bin\nvcc.exe`,
+`bin\x86_64\*.dll`, `include\` and `lib\x64\`. Two gaps to close manually:
+
+1. The cublas wheel ships no import `.lib`. Generate them from the DLL exports
+   (MSVC `dumpbin` + `lib`; ~2 minutes), straight into `lib\x64` next to
+   `cudart.lib`:
+
+```powershell
+foreach ($d in 'cublas64_13.dll','cublasLt64_13.dll') {
+  $base = $d -replace '\.dll$',''; $lib = ($base -replace '64_13$','') + '.lib'
+  $names = dumpbin /EXPORTS "E:\cuda-env\Lib\site-packages\nvidia\cu13\bin\x86_64\$d" |
+    Select-String '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)' | ForEach-Object { $_.Matches.Groups[1].Value } |
+    Where-Object { $_ -notmatch '^(ordinal|hint|RVA|name|Summary)' } | Sort-Object -Unique
+  "LIBRARY $base`r`nEXPORTS`r`n" + ($names -join "`r`n") | Out-File -Encoding ascii "$env:TEMP\$base.def"
+  lib /DEF:"$env:TEMP\$base.def" /OUT:"E:\cuda-env\Lib\site-packages\nvidia\cu13\lib\x64\$lib" /MACHINE:X64
+}
+```
+
+2. Point CMake at it: `-DCUDAToolkit_ROOT=E:/cuda-env/Lib/site-packages/nvidia/cu13`
+   plus `-DCMAKE_CUDA_COMPILER=.../bin/nvcc.exe` (the pip layout is found as a
+   toolkit, but `enable_language(CUDA)` still wants the compiler path).
+
+```powershell
+git clone --depth 1 --branch b10798-mix-659e406 https://github.com/unslothai/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
+$cu = 'E:/cuda-env/Lib/site-packages/nvidia/cu13'   # or your toolkit root
+cmake -S $env:USERPROFILE\.unsloth\llama.cpp -B $env:USERPROFILE\.unsloth\llama.cpp\build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+  -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CUDA=ON `
+  "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120" "-DCMAKE_CUDA_COMPILER=$cu/bin/nvcc.exe" "-DCUDAToolkit_ROOT=$cu" `
   -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
   -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF
-cmake --build build --config Release
+cmake --build $env:USERPROFILE\.unsloth\llama.cpp\build --target ggml-base ggml ggml-cpu ggml-cuda llama
 ```
+
+Notes: `ggml-cuda` builds as a plugin (no import lib needed — the engine loads
+it at runtime, the bundle just carries the DLL). The CUDA compile is the long
+pole (fattn template instances × 6 archs); give it time. `-DLLAMA_CPP_BUILD`
+points at the `build\bin` dir if yours differs.
 
 ## Build the engine
 
 ```powershell
-cmake -S . -B build -DGGML_CUDA=ON  # -DLLAMA_CPP_ROOT=<path> if the tree is elsewhere
-cmake --build build --config Release
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release  # -DLLAMA_CPP_ROOT=<path> if the tree is elsewhere
+cmake --build build
 ```
 
 Binaries land in `build\Release\` (Ninja: `build\`): `qwfn-server.exe`,

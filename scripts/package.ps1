@@ -63,7 +63,7 @@ foreach ($dll in @('ggml-base.dll', 'ggml.dll', 'llama.dll', 'ggml-cuda.dll')) {
   $f = Get-ChildItem -Path $GgmlLibs -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($f) { Copy-Item $f.FullName "$Out\bin\" }
 }
-Get-ChildItem -Path $GgmlLibs -Filter 'ggml-cpu-*.dll' -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$Out\bin\" }
+Get-ChildItem -Path $GgmlLibs -Filter 'ggml-cpu*.dll' -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$Out\bin\" }
 foreach ($pat in @('cudart64_*.dll', 'cublas64_*.dll', 'cublasLt64_*.dll')) {
   Get-ChildItem -Path $CudaDir -Filter $pat | ForEach-Object { Copy-Item $_.FullName "$Out\bin\" }
 }
@@ -85,7 +85,10 @@ qwfnfer $Version -- Qwen3.8-Flash-Next on one 16 GB GPU (Windows x86_64, NVIDIA)
 Everything the engine needs is in bin\ except the NVIDIA driver. See README.md and BUILD_WINDOWS.md.
 "@ | Out-File "$Out\INSTALL.txt" -Encoding ascii
 Write-Host '== checks'
+# usage with no args exits nonzero by design; don't let $ErrorActionPreference turn that into a failure.
+$oldEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $probe = & "$Out\bin\qwfn-server.exe" 2>&1 | Out-String
+$ErrorActionPreference = $oldEap
 if ($probe -notmatch 'usage: qwfn-server') { throw 'qwfn-server.exe does not start' }
 Write-Host 'qwfn-server runs (DLLs from bin\ via PATH)'
 $zipPath = "dist\$Name.zip"

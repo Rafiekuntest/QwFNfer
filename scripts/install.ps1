@@ -53,8 +53,11 @@ try {
   $link = Join-Path $Bin 'qwfnfer.bat'
   Copy-Item (Join-Path $Dest 'qwfnfer.bat') $link -Force
   # The engine must load: every DLL it needs is in bin\ except the driver's nvcuda.dll.
+  # (usage with no args exits nonzero by design; keep that from tripping Stop.)
   $env:PATH = (Join-Path $Dest 'bin') + ';' + $env:PATH
+  $oldEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   $probe = & (Join-Path $Dest 'bin\qwfn-server.exe') 2>&1 | Out-String
+  $ErrorActionPreference = $oldEap
   if ($probe -notmatch 'usage: qwfn-server') { Die 'the engine did not start' }
   $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join-Path $env:HF_HOME 'hub' } else { Join-Path $env:USERPROFILE '.cache\huggingface\hub' }
   $found = Get-ChildItem -Path $hub -Filter '*.gguf' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like '*Qwen3.8-Flash-Next*' } | Select-Object -First 1
