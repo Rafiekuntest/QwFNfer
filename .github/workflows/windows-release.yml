@@ -24,7 +24,7 @@ jobs:
       - name: CUDA from pip wheels (no admin)
         run: |
           python -m pip install --extra-index-url https://pypi.ngc.nvidia.com nvidia-cuda-nvcc nvidia-cuda-runtime nvidia-cublas nvidia-cuda-cccl
-          'CU13=' + (python -c "import nvidia.cu13, os; print(os.path.dirname(nvidia.cu13.__file__))") | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          python -c "from importlib.util import find_spec; print('CU13=' + find_spec('nvidia.cu13').submodule_search_locations[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Generate cublas import libs
         shell: pwsh
         run: |
