@@ -46,7 +46,9 @@ positional reads, `mmap` → file mapping, `liburing` → nothing). Full guide:
 
 **Smaller GPUs** (verified in the planner): 12 GB (RTX 5070) gets a ~4 GB VRAM tier on Chat (~13 tok/s); 8 GB (RTX 5060) runs tierless at ~7–8 tok/s — slower, not broken. 50-series/Blackwell is covered by the bundled CUDA 13 runtime. If even the dense core can't fit, the console refuses with the numbers instead of dying in `cudaMalloc`.
 
-**Qwen3.8-Flash-Next** (the model this engine is built for): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named. The engine reads **GGUF only** — safetensors go through conversion first. Download wherever you like and point the console straight at it (its folder is adopted into the saved locations automatically): The dense non-flash 27B (`qwen35`) is a different graph and runs in llama.cpp instead (`scripts/serve-27b.ps1` converts your safetensors and serves them; `llama.exe cli`/`serve`, any build from b10502 up) — see [SETUP.md](SETUP.md).
+**Qwen3.8-Flash-Next** (the model this engine is built for): any `qwen4exp` GGUF loads — geometry comes from the file's own metadata, presets cap at its trained context, non-`qwen4exp` files are refused with the reason named. The engine reads **GGUF only** — safetensors go through conversion first. Download wherever you like and point the console straight at it (its folder is adopted into the saved locations automatically).
+
+The dense non-flash 27B (`qwen35`) is a different graph and runs in llama.cpp instead (`scripts/serve-27b.ps1` converts your safetensors and serves them; `llama.exe cli`/`serve`, any build from b10502 up) — see [SETUP.md](SETUP.md).
 
 Bugs and ideas: [issues](https://github.com/Rafiekuntest/QwFNfer/issues) ([CONTRIBUTING.md](CONTRIBUTING.md)). Build it yourself: [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
 
@@ -159,10 +161,11 @@ Thinking comes back as `thinking` blocks and tool calls as `tool_use` blocks, st
 
 **Or additive, in the app you already use.** Claude Code takes one base URL, so `tools/qwfn_router.py` listens on it and forwards each request by the model it names: the local model's id goes to the engine, everything else goes to `api.anthropic.com` as it came, headers and body untouched, so the claude.ai login, prompt caching and the beta features keep working. `python3 tools/qwfn_router.py --configure` points Claude Code at it (`~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL` and a `modelPicker` entry, a backup kept; `--unconfigure` reverts) and `--install-service` keeps it running as a systemd user service. The local model then shows in `/model` next to the Anthropic ones, in the same app and the same list of sessions, and each session picks. Side requests (titles, summaries) use the session's small model, so they go to Anthropic and leave the engine's prefix alone.
 
-**Building from source** (only if you want to change the engine; on Windows see [BUILD_WINDOWS.md](BUILD_WINDOWS.md) instead — no liburing, MSVC, DLLs beside the binaries). Needs CMake, Ninja, CUDA, liburing and a built [llama.cpp](https://github.com/unslothai/llama.cpp) tree for the ggml backends and the tokenizer — Unsloth's `b10798-mix-659e406`, the mix the forward pass is validated against:
+**Building from source** (only if you want to change the engine; on Windows see [BUILD_WINDOWS.md](BUILD_WINDOWS.md) instead — no liburing, MSVC, DLLs beside the binaries). Needs CMake, Ninja, CUDA, liburing and a built [llama.cpp](https://github.com/ggerganov/llama.cpp) tree for the ggml backends and the tokenizer — upstream `e85e15cf6d810cd1268498c2e5b657bb3ece47bc` (2026-09-25) or newer, which knows the `qwen4exp` architecture the tokenizer loader requires (older pins fail every Flash-Next start with `unknown model architecture: 'qwen4exp'`):
 
 ```bash
-git clone --depth 1 --branch b10798-mix-659e406 https://github.com/unslothai/llama.cpp ~/.unsloth/llama.cpp
+git clone https://github.com/ggerganov/llama.cpp ~/.unsloth/llama.cpp
+cd ~/.unsloth/llama.cpp && git checkout e85e15cf6d810cd1268498c2e5b657bb3ece47bc
 cmake -S ~/.unsloth/llama.cpp -B ~/.unsloth/llama.cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
 cmake --build ~/.unsloth/llama.cpp/build -j
 ```

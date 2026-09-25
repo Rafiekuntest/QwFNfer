@@ -12,9 +12,13 @@ reading with positional `ReadFile` + `OVERLAPPED` (handles opened with
 - Visual Studio 2022 (MSVC + Windows SDK) **or** MinGW-w64; CMake 3.20+; Ninja
 - CUDA toolkit 13 (`nvcc` on PATH)
 - Python 3.10+ (console + launcher)
-- A built [llama.cpp](https://github.com/unslothai/llama.cpp) tree at
-  `%USERPROFILE%\.unsloth\llama.cpp`, branch `b10798-mix-659e406` — the mix
-  the forward pass is validated against.
+- A built [llama.cpp](https://github.com/ggerganov/llama.cpp) tree at
+  `%USERPROFILE%\.unsloth\llama.cpp`, commit `e85e15cf6d810cd1268498c2e5b657bb3ece47bc`
+  (2026-09-25) or newer — it must know the `qwen4exp` architecture. Older pins
+  (e.g. the Unsloth `b10798-mix-659e406`) fail every Flash-Next start with
+  `unknown model architecture: 'qwen4exp'` / `failed to load vocab`, because
+  the engine loads its tokenizer through llama's model loader. This tree is
+  also what the forward pass is validated against.
 
 No admin rights and no toolkit installer? The whole CUDA side works from
 NVIDIA's pip wheels (no admin needed) — this is how the first release bundle
@@ -47,7 +51,8 @@ foreach ($d in 'cublas64_13.dll','cublasLt64_13.dll') {
    toolkit, but `enable_language(CUDA)` still wants the compiler path).
 
 ```powershell
-git clone --depth 1 --branch b10798-mix-659e406 https://github.com/unslothai/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
+git clone https://github.com/ggerganov/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
+cd $env:USERPROFILE\.unsloth\llama.cpp; git checkout e85e15cf6d810cd1268498c2e5b657bb3ece47bc   # qwen4exp-aware (see above)
 $cu = 'E:/cuda-env/Lib/site-packages/nvidia/cu13'   # or your toolkit root
 cmake -S $env:USERPROFILE\.unsloth\llama.cpp -B $env:USERPROFILE\.unsloth\llama.cpp\build -G Ninja -DCMAKE_BUILD_TYPE=Release `
   -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CUDA=ON `

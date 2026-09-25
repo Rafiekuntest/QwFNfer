@@ -39,11 +39,17 @@ jobs:
             "LIBRARY $base`r`nEXPORTS`r`n" + ($names -join "`r`n") | Out-File -Encoding ascii "$env:RUNNER_TEMP\$base.def"
             lib /DEF:"$env:RUNNER_TEMP\$base.def" /OUT:"$cu\lib\x64\$lib" /MACHINE:X64
           }
-      - name: Build llama.cpp (pinned mix, CUDA backend)
+      - name: Build llama.cpp (pinned upstream, CUDA backend)
         shell: pwsh
         run: |
           $cu = ($env:CUDIR -replace '\\','/')
-          git clone --depth 1 --branch b10798-mix-659e406 https://github.com/unslothai/llama.cpp $env:RUNNER_TEMP\llama.cpp
+          # Upstream at a commit that knows the qwen4exp architecture (2026-09-25).
+          # Older pins (e.g. the Unsloth b10798 mix) fail every Flash-Next start
+          # with "unknown model architecture: 'qwen4exp'" in the vocab loader.
+          git init $env:RUNNER_TEMP\llama.cpp
+          git -C $env:RUNNER_TEMP\llama.cpp remote add origin https://github.com/ggerganov/llama.cpp
+          git -C $env:RUNNER_TEMP\llama.cpp fetch --depth 1 origin e85e15cf6d810cd1268498c2e5b657bb3ece47bc
+          git -C $env:RUNNER_TEMP\llama.cpp checkout FETCH_HEAD
           cmake -S $env:RUNNER_TEMP\llama.cpp -B $env:RUNNER_TEMP\llama.cpp\build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CUDA=ON `
             "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120" "-DCMAKE_CUDA_COMPILER=$cu/bin/nvcc.exe" "-DCUDAToolkit_ROOT=$cu" `

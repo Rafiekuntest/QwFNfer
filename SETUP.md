@@ -13,13 +13,13 @@ Run Qwen3.8-Flash-Next (125B MoE) on your own gaming PC: 15–25 tok/s on a 16 G
 
 ## 2. Install the app
 
-Download `qwfnfer-windows-x86_64-cuda.zip` from the [Releases](../../releases) page, unzip it anywhere, and run the installer:
+Download `qwfnfer-windows-x86_64-cuda.zip` from the [Releases](../../releases) page, unzip it anywhere (e.g. `C:\qwfnfer`), and run the installer from that folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-It installs into `%LOCALAPPDATA%\qwfnfer`, checks your GPU driver, and proves the engine loads. (No release yet, or offline? `set QWFN_ZIP=C:\path\to\qwfnfer-windows-x86_64-cuda.zip` first — same command, no download.)
+The bundle ships its own ggml DLLs and CUDA 13 runtime beside the binary — no PATH manipulation, nothing added to your system. The installer puts it under `%LOCALAPPDATA%\qwfnfer`, checks your GPU driver (needs 580+), and proves the engine binary loads. If it complains about a missing DLL, the archive wasn't fully unzipped — every DLL lives in `bin\` beside the engine. (No release yet, or offline? `set QWFN_ZIP=C:\path\to\qwfnfer-windows-x86_64-cuda.zip` first — same command, no download.)
 
 Uninstall: delete `%LOCALAPPDATA%\qwfnfer` and `%USERPROFILE%\.local\bin\qwfnfer.bat`. The model files stay where you put them.
 
@@ -61,7 +61,16 @@ It opens `http://127.0.0.1:8090`. Pick your quant and a tier:
 | Agentic coding+ | 256K | longest sessions, full trained context |
 | Custom | yours | anything you save under *Advanced settings* |
 
-Press **Auto-tune & start** (about five minutes, once per model): it measures your drive, sweeps the CPU thread count on the running server, sizes the RAM tier with headroom to spare, and verifies on a short chat plus a 16K–32K-token document. After that the tier card shows your measured speed. **Start server** skips re-measuring; **Self-test** measures a running server.
+Press **Auto-tune & start** (about five minutes, once per model): it measures your drive, sweeps the CPU thread count on the running server, sizes the RAM tier with headroom to spare, and verifies on a short chat plus a 16K–32K-token document. After that the tier card shows your measured speed. **Start server** skips re-measuring; **Self-test** measures a running server. The OpenAI endpoint is `http://127.0.0.1:8080/v1`.
+
+> **One hard rule:** run Flash-Next only in `qwfnfer` / `qwfn-server`.
+> Stock `llama.cpp` builds (and any bundle or checkout pinned before `qwen4exp`
+> support) fail on these files with `unknown model architecture: 'qwen4exp'` /
+> `failed to load vocab`. That error names an outdated *loader*, not a broken
+> model — the engine reads its tokenizer through llama's loader, so the loader
+> must know the architecture. Bundles `windows-beta4` and up ship a
+> `qwen4exp`-aware build; from source, check out the commit in
+> [BUILD_WINDOWS.md](BUILD_WINDOWS.md).
 
 ## Smaller GPUs: 8 GB and 12 GB (RTX 5060 / 5070 and friends)
 

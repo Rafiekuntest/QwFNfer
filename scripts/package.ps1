@@ -11,11 +11,13 @@
   launcher and the README.
 
   Prerequisites: Visual Studio 2022 (MSVC + Windows SDK), CMake 3.20+,
-  CUDA toolkit 13, and a built llama.cpp tree (Unsloth b10798-mix-659e406,
-  the mix the engine is validated against):
+  CUDA toolkit 13, and a built llama.cpp tree (upstream
+  e85e15cf6d810cd1268498c2e5b657bb3ece47bc or newer -- it must know the
+  qwen4exp architecture, older pins fail every Flash-Next start in the
+  vocab loader; also the tree the engine is validated against):
 
-    git clone https://github.com/unslothai/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
-    cd $env:USERPROFILE\.unsloth\llama.cpp; git checkout b10798-mix-659e406
+    git clone https://github.com/ggerganov/llama.cpp $env:USERPROFILE\.unsloth\llama.cpp
+    cd $env:USERPROFILE\.unsloth\llama.cpp; git checkout e85e15cf6d810cd1268498c2e5b657bb3ece47bc
     cmake -S . -B build -DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120" `
       -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF `
       -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
